@@ -1,0 +1,16 @@
+rabbitmq:
+  host: "localhost"
+  port: "5672"
+  user: "vism_acme"
+  password: "vism_acme"
+  vhost: "/"
+
+  csr_queue: "csr"
+  cert_queue: "cert"
+  csr_exchange: "csr"
+  cert_exchange: "cert"
+
+  max_retries: "5"
+  retry_delay_seconds: "60"
+
+  data_validation_key: "super-secret-key"

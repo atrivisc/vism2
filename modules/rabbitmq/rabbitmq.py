@@ -1,0 +1,208 @@
+"""RabbitMQ module for secure message exchange in VISM."""
+
+import asyncio
+import json
+import socket
+
+import aio_pika
+from aio_pika import Message
+from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
+from aio_pika.pool import Pool
+from aiormq import AMQPConnectionError
+
+from modules import module_logger
+from modules.rabbitmq.config import RabbitMQConfig
+from modules.rabbitmq.errors import RabbitMQError
+from lib.data.exchange import (
+    DataExchange,
+    DataExchangeCSRMessage,
+    DataExchangeMessage,
+    DataExchangeCertMessage
+)
+
+
+class RabbitMQ(DataExchange):
+    """RabbitMQ implementation of DataExchange."""
+    configClass = RabbitMQConfig
+    config: RabbitMQConfig
+
+    def __init__(self, *args, **kwargs):
+        module_logger.debug("Initializing RabbitMQ module")
+        super().__init__(*args, **kwargs)
+        self.connection_pool: Pool = Pool(self.get_connection, max_size=20)
+        self.channel_pool: Pool = Pool(self.get_channel, max_size=100)
+
+    async def get_channel(self) -> aio_pika.Channel:
+        async with self.connection_pool.acquire() as connection:
+            return await connection.channel(on_return_raises=True)
+
+    async def cleanup(self, full: bool = False):
+        """Clean up RabbitMQ resources."""
+        module_logger.debug("Cleaning up RabbitMQ")
+        if full:
+            await asyncio.shield(self.channel_pool.close())
+            await asyncio.shield(self.connection_pool.close())
+
+    async def send_message(
+        self, message: DataExchangeMessage, exchange: str,
+        message_type: str, routing_key: str
+    ):
+        """Send data to RabbitMQ exchange."""
+        module_logger.info(
+            "Sending message to RabbitMQ exchange '%s'", exchange
+        )
+
+        data_json = message.to_json().encode("utf-8")
+        message_signature = self.validation_module.sign(data_json)
+
+        async with self.channel_pool.acquire() as channel:
+            if not channel.is_initialized:
+                await channel.initialize(timeout=30)
+
+            exchange_obj = await channel.get_exchange(exchange)
+
+            rabbitmq_message: Message = Message(
+                body=data_json,
+                headers={
+                    "X-Vism-Message-Type": message_type,
+                    "X-Vism-Signature": message_signature,
+                    "Content-Type": "application/octet-stream",
+                }
+            )
+
+            try:
+                await exchange_obj.publish(
+                    message=rabbitmq_message,
+                    routing_key=routing_key,
+                )
+            except Exception as e:
+                module_logger.error(f"Failed to publish message: {e}")
+                raise RuntimeError from e
+
+    async def send_cert(self, message: DataExchangeCertMessage):
+        """Send certificate message."""
+        await self.send_message(message, self.config.cert_exchange, "cert", "cert")
+
+    async def send_csr(self, message: DataExchangeCSRMessage):
+        """Send CSR message."""
+        await self.send_message(message, self.config.csr_exchange, "csr", "csr")
+
+    async def receive_cert(self, *, retry_count: int = 0):
+        """Receive certificate messages from queue."""
+        module_logger.info(
+            "Starting listening for messages from RabbitMQ queue '%s'",
+            self.config.cert_queue
+        )
+        async with self.channel_pool.acquire() as channel:
+            if not channel.is_initialized:
+                await channel.initialize(timeout=30)
+
+            await channel.set_qos(prefetch_count=1)
+            queue = await channel.declare_queue(
+                name=self.config.cert_queue,
+                passive=True,
+                durable=True,
+                robust=True,
+            )
+
+            try:
+                consumer_tag = socket.gethostname()
+                await queue.consume(self.handle_message, consumer_tag=consumer_tag)
+            except AMQPConnectionError:
+                if retry_count >= self.config.max_retries:
+                    raise
+                await asyncio.sleep(self.config.retry_delay_seconds)
+                return await self.receive_cert(retry_count=retry_count + 1)
+
+    async def receive_csr(self, *, retry_count: int = 0):
+        """Receive CSR messages from queue."""
+        module_logger.info(
+            "Starting listening for messages from RabbitMQ queue '%s'",
+            self.config.csr_queue
+        )
+        async with self.channel_pool.acquire() as channel:
+            if not channel.is_initialized:
+                await channel.initialize(timeout=30)
+
+            await channel.set_qos(prefetch_count=1)
+            queue = await channel.declare_queue(
+                name=self.config.csr_queue,
+                passive=True,
+                durable=True,
+                robust=True,
+            )
+
+            try:
+                consumer_tag = socket.gethostname()
+                await queue.consume(self.handle_message, consumer_tag=consumer_tag)
+            except AMQPConnectionError as e:
+                if retry_count >= self.config.max_retries:
+                    raise e
+                await asyncio.sleep(self.config.retry_delay_seconds)
+                return await self.receive_csr(retry_count=retry_count + 1)
+
+    async def handle_message(self, message: AbstractIncomingMessage):
+        """Handle incoming RabbitMQ message."""
+        module_logger.info("Received message from RabbitMQ.")
+        async with message.process():
+            message_type = message.headers.get("X-Vism-Message-Type", None)
+            if not message_type:
+                module_logger.error(
+                    "No message type found in message headers: %s",
+                    message.headers
+                )
+                return None
+
+            module_logger.info(
+                "Processing message from RabbitMQ of type '%s'.",
+                message_type
+            )
+            module_logger.debug(
+                "Message body: %s | Signature: %s",
+                message.body, message.headers['X-Vism-Signature']
+            )
+
+            if not self.validation_module.verify(message.body, message.headers["X-Vism-Signature"]):
+                raise RabbitMQError('Invalid signature')
+
+            if message.headers["X-Vism-Message-Type"] == "csr":
+                csr_message = DataExchangeCSRMessage(
+                    **json.loads(message.body)
+                )
+                ca_obj = Certificate(self.controller, csr_message.ca_name)
+                chain = ca_obj.sign_csr(
+                    csr_message.csr_pem, csr_message.module_args, acme=True
+                )
+
+                cert_message = DataExchangeCertMessage(
+                    chain=chain,
+                    order_id=csr_message.order_id,
+                    ca_name=csr_message.ca_name,
+                    profile_name=csr_message.profile_name,
+                    original_signature_b64=message.headers["X-Vism-Signature"],
+                )
+                await self.send_cert(cert_message)
+            elif message.headers["X-Vism-Message-Type"] == "cert":
+                cert_message = DataExchangeCertMessage(
+                    **json.loads(message.body)
+                )
+                if not self.validation_module.verify(message.body, cert_message.original_signature_b64):
+                    raise RabbitMQError('Invalid signature')
+
+                await self.controller.handle_chain_from_ca(cert_message)
+
+            return None
+
+    async def get_connection(self) -> AbstractRobustConnection:
+        try:
+            return await aio_pika.connect_robust(
+                host=self.config.host,
+                port=self.config.port,
+                login=self.config.user,
+                password=self.config.password,
+                virtualhost=self.config.vhost,
+            )
+        except AMQPConnectionError as e:
+            raise RabbitMQError(
+                f"Failed to connect to RabbitMQ: {e}"
+            ) from e

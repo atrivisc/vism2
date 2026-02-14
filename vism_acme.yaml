@@ -1,0 +1,51 @@
+vism_acme:
+  nonce_ttl_seconds: "300"
+  retry_after_seconds: "5"
+
+  http01:
+    port: 80
+    follow_redirect: true
+    timeout_seconds: 2
+    retries: 1
+    retry_delay_seconds: 5
+
+  security:
+    data_exchange:
+      module: "rabbitmq"
+      validation_key: "super-secret-key"
+
+  s3:
+    bucket: "vism"
+    endpoint: "localhost:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+
+  database:
+    data_validation_key: "super-secret-key"
+    host: "localhost"
+    port: "5432"
+    database: "vism_acme"
+    username: "vism_acme"
+    password: "vism_acme"
+
+  profiles:
+    - name: "default"
+      ca: "example-ca"
+      enabled: true
+      default: true
+
+      ca_pem: |
+        -----BEGIN CERTIFICATE-----
+        <CA_CERT_PEM_HERE>
+        -----END CERTIFICATE-----
+
+      module_args: {}
+
+    - name: "secondary"
+      ca: "other-ca"
+      enabled: true
+      default: false
+      ca_pem: |
+        -----BEGIN CERTIFICATE-----
+        <OTHER_CA_CERT_PEM_HERE>
+        -----END CERTIFICATE-----

@@ -1,0 +1,119 @@
+"""Utility functions for VISM components."""
+
+import ipaddress
+import re
+import subprocess
+import base64
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+from starlette.requests import Request
+
+def signed32(x):
+    return (x - (1 << 32)) if (x >= (1 << 31)) else x
+
+def is_valid_ip(ip_str):
+    """Check if a string is a valid IP address."""
+    try:
+        ipaddress.ip_address(ip_str)
+        return True
+    except ValueError:
+        return False
+
+
+def is_valid_subnet(subnet_str):
+    """Check if a string is a valid subnet."""
+    try:
+        ipaddress.ip_network(subnet_str, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """Derive a cryptographic key from password and salt using PBKDF2."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    return kdf.derive(password.encode())
+
+
+def get_needed_libraries(binary_path) -> list[str]:
+    """Get list of shared libraries needed by a binary."""
+    command = f"ldd {binary_path} | grep -oP '\\s/([^\\s])*'"
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=True,
+        check=False
+    )
+
+    return list(
+        map(
+            lambda x: x.strip(),
+            result.stdout.split("\n")[:-1]
+        )
+    )
+
+
+def b64u_decode(data: str) -> bytes:
+    """Decode base64url encoded data."""
+    if data is None:
+        return b""
+
+    if isinstance(data, bytes):
+        data = data.decode("ascii")
+
+    data = data.strip()
+    if data == "":
+        return b""
+
+    rem = len(data) % 4
+    if rem:
+        data += "=" * (4 - rem)
+
+    return base64.urlsafe_b64decode(data)
+
+
+def snake_to_camel(name):
+    """Convert snake_case to camelCase."""
+    split = name.split('_')
+    return split[0] + ''.join(word.capitalize() for word in split[1:])
+
+
+def camel_to_snake(name):
+    """Convert camelCase to snake_case."""
+    name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+
+
+def absolute_url(request: Request, path: str) -> str:
+    """Build absolute URL from request and path."""
+    base = str(request.base_url.replace(scheme="https")).rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def get_client_ip(request: Request):
+    """Get client IP address from request, respecting X-Forwarded-For."""
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(",")[0].strip()
+    else:
+        ip = request.client.host
+    return ip
+
+
+def fix_base64_padding(base64_string):
+    """Fix base64 string padding if missing."""
+    padding_needed = len(base64_string) % 4
+    if padding_needed != 0:
+        base64_string += "=" * (4 - padding_needed)
+    return base64_string
