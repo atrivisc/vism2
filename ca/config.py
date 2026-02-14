@@ -7,11 +7,14 @@ configuration, certificate configuration, and the main CA configuration class.
 import enum
 import logging
 import os
-from typing import ClassVar
+from typing import ClassVar, Any
 
+import pkcs11
+from pkcs11.util.ec import encode_named_curve_parameters
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
+from ca.p11 import PKCS11PrivKey, PKCS11PubKey
 from lib.config import VismConfig
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,9 @@ class KeyConfig:
     @classmethod
     def validate_rsa_bits(cls, v: int):
         """Validate RSA key size."""
+        if v is None:
+            return v
+
         if not 2048 <= v <= 8192:
             raise ValueError(f"RSA key size must be between 2048 and 8192 bits, got {v}")
 
@@ -77,7 +83,6 @@ class CertificateConfig:
     """Configuration for a certificate."""
 
     name: str
-    pkcs11: PKCS11Config
 
     signed_by: str = None
     externally_managed: bool = False
@@ -86,6 +91,39 @@ class CertificateConfig:
 
     key: KeyConfig = None
     crypto: CertificateCryptoConfig = None
+
+    @property
+    def label(self):
+        if self.key.algorithm == SupportedKeyAlgorithms.rsa:
+            return f"{self.name}-{self.key.algorithm.value}-{self.key.bits}"
+        if self.key.algorithm == SupportedKeyAlgorithms.ec:
+            return f"{self.name}-{self.key.algorithm.value}-{self.key.curve}"
+        else:
+            raise ValueError(f"Unsupported key algorithm: {self.key.algorithm}")
+
+    @property
+    def p11_attributes(self):
+        attributes: dict[pkcs11.Attribute, Any] = {
+            pkcs11.Attribute.LABEL: self.label,
+        }
+
+        if self.key.algorithm == SupportedKeyAlgorithms.rsa:
+            attributes[pkcs11.Attribute.KEY_TYPE] = pkcs11.KeyType.RSA
+            attributes[pkcs11.Attribute.MODULUS_BITS] = self.key.bits
+
+        if self.key.algorithm == SupportedKeyAlgorithms.ec:
+            attributes[pkcs11.Attribute.KEY_TYPE] = pkcs11.KeyType.EC
+            attributes[pkcs11.Attribute.EC_PARAMS] = encode_named_curve_parameters(self.key.curve)
+
+        return attributes
+
+    @property
+    def p11_pub_key(self):
+        return PKCS11PubKey(self.p11_attributes)
+
+    @property
+    def p11_priv_key(self):
+        return PKCS11PrivKey(self.p11_attributes)
 
 
 @dataclass
@@ -96,6 +134,7 @@ class CAConfig(VismConfig):
     __config_dir__: ClassVar[str] = f"{os.getenv("CONFIG_DIR", os.getcwd()).rstrip("/")}"
     __config_file__: ClassVar[str] = f"{__config_dir__}/vism_ca.yaml"
 
+    pkcs11: PKCS11Config = None
     x509_certificates: list[CertificateConfig] = None
 
     def get_cert_config_by_name(self, cert_name: str) -> CertificateConfig:
