@@ -1,6 +1,7 @@
 import pkcs11
 from pkcs11 import Attribute
-from ca.p11 import PKCS11Object
+
+from ca.p11.object import PKCS11Object
 
 
 def _build_template(
@@ -21,7 +22,6 @@ class PKCS11PubKey(PKCS11Object):
         Attribute.VERIFY: True,
         Attribute.WRAP: False,
         Attribute.MODIFIABLE: False,
-        Attribute.SENSITIVE: False,
     }
 
     @property

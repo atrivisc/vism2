@@ -14,7 +14,6 @@ from pkcs11.util.ec import encode_named_curve_parameters
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
-from ca.p11 import PKCS11PrivKey, PKCS11PubKey
 from lib.config import VismConfig
 
 logger = logging.getLogger(__name__)
@@ -116,14 +115,6 @@ class CertificateConfig:
             attributes[pkcs11.Attribute.EC_PARAMS] = encode_named_curve_parameters(self.key.curve)
 
         return attributes
-
-    @property
-    def p11_pub_key(self):
-        return PKCS11PubKey(self.p11_attributes)
-
-    @property
-    def p11_priv_key(self):
-        return PKCS11PrivKey(self.p11_attributes)
 
 
 @dataclass
