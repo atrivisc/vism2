@@ -36,16 +36,14 @@ class KeyConfig:
         if v not in [SupportedKeyAlgorithms.rsa, SupportedKeyAlgorithms.ec]:
             raise ValueError(f"Unsupported key algorithm: {v}")
 
+        return v
+
     @field_validator("bits")
     @classmethod
     def validate_rsa_bits(cls, v: int):
         """Validate RSA key size."""
-        if cls.algorithm == SupportedKeyAlgorithms.rsa:
-            if v is None:
-                raise ValueError("RSA key size must be specified for RSA keys")
-
-            if not 2048 <= v <= 8192:
-                raise ValueError(f"RSA key size must be between 2048 and 8192 bits, got {v}")
+        if not 2048 <= v <= 8192:
+            raise ValueError(f"RSA key size must be between 2048 and 8192 bits, got {v}")
 
         return v
 
@@ -61,7 +59,7 @@ class CertificateCryptoConfig:
 class PKCS11Config:
     """PKCS#11 configuration."""
     lib_path: str
-    token: str
+    token_label: str
     user_pin: str
 
     @field_validator("lib_path")
@@ -70,6 +68,8 @@ class PKCS11Config:
         """Validate PKCS#11 library path."""
         if not os.path.exists(v):
             raise ValueError(f"PKCS#11 library path '{v}' does not exist")
+
+        return v
 
 
 @dataclass

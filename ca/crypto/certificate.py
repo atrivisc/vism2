@@ -8,7 +8,7 @@ from pkcs11.types import Token
 from pkcs11._pkcs11 import lib
 from pydantic.dataclasses import dataclass
 from ca.database import CertificateEntity
-from ca.config import CertificateConfig, SupportedKeyAlgorithms
+from ca.config import CertificateConfig, SupportedKeyAlgorithms, PKCS11Config, KeyConfig
 from pkcs11.util.ec import encode_named_curve_parameters
 from pkcs11 import Attribute, KeyType
 
@@ -17,22 +17,27 @@ from pkcs11 import Attribute, KeyType
 class CryptoCertificate:
     """Data class for crypto data."""
 
+    config: 'CertificateConfig'
+
     crt_pem: str = None
     key_pem: str = None
     pub_key_pem: str = None
     csr_pem: str = None
     crl_pem: str = None
-    config: 'CertificateConfig' = None
 
-    p11: lib = field(init=False, default=pkcs11.lib(config.pkcs11.lib_path))
-    p11_token: Token = field(init=False, default=p11.get_token(config.pkcs11.token))
+    p11: lib = field(init=False)
+    p11_token: Token = field(init=False)
+
+    def __post_init__(self):
+        self.p11 = pkcs11.lib(self.config.pkcs11.lib_path)
+        self.p11_token = self.p11.get_token(token_label=self.config.pkcs11.token_label)
 
     @property
     def _label(self):
         if self.config.key.algorithm == SupportedKeyAlgorithms.ec:
-            return f"{self.config.name}-{self.config.key.algorithm}-{self.config.key.curve}"
+            return f"{self.config.name}-{self.config.key.algorithm.value}-{self.config.key.curve}"
         elif self.config.key.algorithm == SupportedKeyAlgorithms.rsa:
-            return f"{self.config.name}-{self.config.key.algorithm}-{self.config.key.bits}"
+            return f"{self.config.name}-{self.config.key.algorithm.value}-{self.config.key.bits}"
         else:
             raise ValueError(f"Unsupported key algorithm: {self.config.key.algorithm}")
 
@@ -46,8 +51,6 @@ class CryptoCertificate:
             Attribute.UNWRAP: False,
             Attribute.EXTRACTABLE: False,
             Attribute.MODIFIABLE: False,
-            Attribute.SENSITIVE: True,
-            Attribute.ID: hashlib.sha256(f"{self._label}-private".encode()).digest(),
             Attribute.LABEL: f"{self._label}-private",
         }
 
@@ -59,8 +62,6 @@ class CryptoCertificate:
             Attribute.VERIFY: True,
             Attribute.ENCRYPT: True,
             Attribute.WRAP: False,
-            Attribute.EXTRACTABLE: True,
-            Attribute.ID: hashlib.sha256(f"{self._label}-public".encode()).digest(),
             Attribute.LABEL: f"{self._label}-public"
         }
 
@@ -88,13 +89,13 @@ class CryptoCertificate:
         )
 
     def generate_key_pair(self):
-        with self.p11_token.open(user_pin=self.config.pkcs11.user_pin.encode("utf-8")) as session:
+        print(self.config)
+        with self.p11_token.open(user_pin=self.config.pkcs11.user_pin) as session:
             if self.config.key.algorithm == SupportedKeyAlgorithms.rsa:
                 self.key_pem, self.pub_key_pem = session.generate_keypair(
                     pkcs11.KeyType.RSA, self.config.key.bits,
                     private_template=self._private_key_properties,
-                    public_template=self._public_key_properties,
-                    store=True
+                    public_template=self._public_key_properties
                 )
             elif self.config.key.algorithm == SupportedKeyAlgorithms.ec:
                 ecc_params = session.create_domain_parameters(
@@ -103,10 +104,12 @@ class CryptoCertificate:
                 )
                 self.key_pem, self.pub_key_pem = ecc_params.generate_keypair(
                     private_template=self._private_key_properties,
-                    public_template=self._public_key_properties,
-                    store=True
+                    public_template=self._public_key_properties
                 )
             else:
                 raise ValueError(f"Unsupported key algorithm: {self.config.key.algorithm}")
 
+            print(self.key_pem, self.pub_key_pem.)
+
         return self
+
