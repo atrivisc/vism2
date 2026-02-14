@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from ca.ca import VismCA
+from ca.main import VismCA
 from ca.config import ca_logger
 from ca.database import CertificateEntity
 from lib.errors import VismException, VismBreakingException

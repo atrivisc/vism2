@@ -6,5 +6,3 @@ from ca.crypto.certificate import CryptoCertificate
 from pkcs11 import Attribute, KeyType
 
 
-class Crypto:
-

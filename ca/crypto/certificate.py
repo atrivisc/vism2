@@ -87,7 +87,7 @@ class CryptoCertificate:
             crl_pem=cert_entity.crl_pem,
         )
 
-    def generate_private_key_pair(self):
+    def generate_key_pair(self):
         with self.p11_token.open(user_pin=self.config.pkcs11.user_pin.encode("utf-8")) as session:
             if self.config.key.algorithm == SupportedKeyAlgorithms.rsa:
                 self.key_pem, self.pub_key_pem = session.generate_keypair(

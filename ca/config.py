@@ -4,7 +4,7 @@ Configuration module for Vism CA.
 This module provides configuration classes for the CA, including database
 configuration, certificate configuration, and the main CA configuration class.
 """
-
+import enum
 import logging
 import os
 from typing import ClassVar
@@ -17,11 +17,10 @@ from lib.config import VismConfig
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
 
-@dataclass
-class SupportedKeyAlgorithms:
+class SupportedKeyAlgorithms(enum.Enum):
     """Supported key algorithms."""
-    rsa: str = "RSA"
-    ec: str = "EC"
+    rsa = "RSA"
+    ec = "EC"
 
 
 @dataclass
