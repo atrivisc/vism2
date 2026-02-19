@@ -17,9 +17,9 @@ class Controller:
     def __init__(self):
         self.config = self.configClass.load()
         self.setup_logging()
-        self.data_exchange_module = self.setup_data_exchange_module()
         self.database = self.databaseClass(self.config.database)
         self.s3 = AsyncS3Client(self.config.s3)
+        self.data_exchange_module = None
 
         self._shutdown_event = asyncio.Event()
 
@@ -36,7 +36,7 @@ class Controller:
         shared_logger.info("Received shutdown signal, shutting down")
         self._shutdown_event.set()
 
-    def setup_data_exchange_module(self) -> DataExchange:
+    async def setup_data_exchange_module(self) -> DataExchange:
         """Set up the data exchange module from configuration."""
         data_exchange_module_imports = __import__(
             f'modules.{self.config.security.data_exchange.module}',
@@ -47,4 +47,5 @@ class Controller:
             data_exchange_module_imports.LOGGING_SENSITIVE_PATTERNS
         )
 
-        return data_exchange_module_imports.Module(self)
+        self.data_exchange_module = data_exchange_module_imports.Module(self)
+        return self.data_exchange_module

@@ -1,0 +1,37 @@
+vism_ca:
+  logging:
+    log_root: "vism_ca"
+    verbose: True
+
+  security:
+    data_exchange:
+      module: "rabbitmq"
+      validation_key: "super-secret-key"
+
+  s3:
+    bucket: "vism"
+    endpoint: "localhost:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+
+  database:
+    data_validation_key: "super-secret-key"
+    host: "localhost"
+    port: "5432"
+    database: "vism_ca"
+    username: "vism_ca"
+    password: "vism_ca"
+
+  pkcs11:
+    lib_path: /usr/local/lib/softhsm/libsofthsm2.so
+    token_label: TEST_01
+    user_pin: "1234"
+
+  x509_certificates:
+    - name: "testing123"
+      key:
+        algorithm: RSA
+        bits: 4096
+      crypto:
+        cn: "Testing 123"
+        days: 1

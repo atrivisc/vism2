@@ -103,7 +103,7 @@ class VismDatabase:
     """Database interface for VISM operations."""
 
     def __init__(self, database_config: DatabaseConfig):
-        shared_logger.info("Initializing database")
+        shared_logger.debug("Initializing database")
         self.db_url = URL.create(
             drivername=database_config.driver,
             username=database_config.username,

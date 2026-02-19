@@ -69,7 +69,7 @@ class DataExchange(metaclass=ABCMeta):
     configClass = DataExchangeConfig
 
     def __init__(self, controller):
-        shared_logger.info(
+        shared_logger.debug(
             "Initializing DataExchange module: %s",
             self.__class__.__name__
         )

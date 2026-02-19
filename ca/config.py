@@ -5,16 +5,27 @@ This module provides configuration classes for the CA, including database
 configuration, certificate configuration, and the main CA configuration class.
 """
 import enum
+import hashlib
+import ipaddress
 import logging
 import os
+from dataclasses import field
 from typing import ClassVar, Any
-
+import idna
+import cryptography.x509
 import pkcs11
+from cryptography import x509
+from cryptography.hazmat._oid import NameOID
+from cryptography.hazmat.bindings._rust import ObjectIdentifier
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, ec
+from cryptography.x509 import RFC822Name, IPAddress, DNSName, DirectoryName, Name, UniformResourceIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from lib.config import VismConfig
+from lib.util import pkcs11_pub_key_to_bytes
 
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
@@ -76,6 +87,160 @@ class PKCS11Config:
 
         return v
 
+@dataclass
+class X509ConfigSubjectName:
+    """X509 subject name configuration."""
+    common_name: str = None
+    country: str = None
+    state_or_province: str = None
+    locality: str = None
+    organization: str = None
+
+    def to_obj(self):
+        attrs = []
+        if self.common_name:
+            attrs.append(x509.NameAttribute(NameOID.COMMON_NAME, self.common_name))
+        if self.country:
+            attrs.append(x509.NameAttribute(NameOID.COUNTRY_NAME, self.country))
+        if self.state_or_province:
+            attrs.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, self.state_or_province))
+        if self.locality:
+            attrs.append(x509.NameAttribute(NameOID.LOCALITY_NAME, self.locality))
+        if self.organization:
+            attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.organization))
+
+        return x509.Name(attrs)
+
+
+@dataclass
+class X509ConfigKeyUsage:
+    """X509 key usage configuration."""
+    digital_signature: bool = False
+    content_commitment: bool = False
+    key_encipherment: bool = False
+    data_encipherment: bool = False
+    key_agreement: bool = False
+    key_cert_sign: bool = False
+    crl_sign: bool = False
+    encipher_only: bool = False
+    decipher_only: bool = False
+    critical: bool = False
+
+    def to_obj(self):
+        return x509.KeyUsage(
+            digital_signature=self.digital_signature,
+            content_commitment=self.content_commitment,
+            key_encipherment=self.key_encipherment,
+            data_encipherment=self.data_encipherment,
+            key_agreement=self.key_agreement,
+            key_cert_sign=self.key_cert_sign,
+            crl_sign=self.crl_sign,
+            encipher_only=self.encipher_only,
+            decipher_only=self.decipher_only,
+        )
+
+@dataclass
+class X509ConfigExtendedKeyUsage:
+    usages: list[ObjectIdentifier]
+    critical: bool = False
+
+    def to_obj(self):
+        return x509.ExtendedKeyUsage(usages=self.usages)
+
+@dataclass
+class X509ConfigBasicConstraints:
+    ca: bool = False
+    path_length: int = 0
+    critical: bool = False
+
+    def to_obj(self):
+        return x509.BasicConstraints(self.ca, self.path_length)
+
+@dataclass
+class X509ConfigSubjectAlternativeName:
+    """X509 subject alternative name configuration."""
+    ips: list[str] = None
+    dns: list[str] = None
+    emails: list[str] = None
+
+    def to_obj(self):
+        names = []
+        for ip in self.ips:
+            ip_address = ipaddress.ip_address(ip)
+            names.append(IPAddress(ip_address))
+
+        for dns in self.dns:
+            names.append(DNSName(idna.encode(dns).decode()))
+
+        for email in self.emails:
+            names.append(RFC822Name(idna.encode(email).decode()))
+
+        return x509.SubjectAlternativeName(names)
+
+class X509ConfigAccessDescriptionLocationType(enum.Enum):
+    URL = "URL"
+
+@dataclass
+class X509ConfigAccessDescription:
+    """X509 authority info access description configuration."""
+    access_method: str
+    access_location_type: X509ConfigAccessDescriptionLocationType
+    access_location: str
+
+    def to_obj(self):
+        if self.access_location_type == X509ConfigAccessDescriptionLocationType.URL:
+            location = UniformResourceIdentifier(self.access_location)
+        else:
+            raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
+
+        if self.access_location.upper() == "CA_ISSUERS":
+            return x509.AccessDescription(access_method=x509.OID_CA_ISSUERS, access_location=location)
+        elif self.access_location.upper() == "OCSP":
+            return x509.AccessDescription(access_method=x509.OID_OCSP, access_location=location)
+        else:
+            raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
+
+
+@dataclass
+class X509ConfigAuthorityInfoAccess:
+    """X509 authority info access configuration."""
+    descriptions: list[X509ConfigAccessDescription]
+
+    def to_obj(self):
+        descriptions = [desc.to_obj() for desc in self.descriptions]
+        return x509.AuthorityInformationAccess(descriptions)
+
+@dataclass
+class X509ConfigDistributionPoint:
+    """X509 distribution point configuration."""
+    names: list[str]
+    reasons: list[str]
+
+    def to_obj(self):
+        reasons = frozenset([x509.ReasonFlags.__getitem__(reason) for reason in self.reasons])
+        names = [x509.UniformResourceIdentifier(name) for name in self.names]
+        return x509.DistributionPoint(names, relative_name=None, crl_issuer=None, reasons=reasons)
+
+
+@dataclass
+class X509ConfigCRLDistributionPoints:
+    """X509 CRL distribution points configuration."""
+    points: list[X509ConfigDistributionPoint]
+
+    def to_obj(self):
+        return x509.CRLDistributionPoints([point.to_obj() for point in self.points])
+
+@dataclass
+class X509Config:
+    """X509 configuration."""
+    subject_name: X509ConfigSubjectName
+    basic_constraints: X509ConfigBasicConstraints
+    key_usage: X509ConfigKeyUsage
+    extended_key_usage: X509ConfigExtendedKeyUsage
+    subject_alternative_name: X509ConfigSubjectAlternativeName
+    authority_info_access: X509ConfigAuthorityInfoAccess
+    crl_distribution_points: X509ConfigCRLDistributionPoints
+
 
 @dataclass
 class CertificateConfig:
@@ -89,7 +254,7 @@ class CertificateConfig:
     crl_pem: str = None
 
     key: KeyConfig = None
-    crypto: CertificateCryptoConfig = None
+    x509: X509Config = None
 
     @property
     def label(self):
@@ -100,10 +265,36 @@ class CertificateConfig:
         else:
             raise ValueError(f"Unsupported key algorithm: {self.key.algorithm}")
 
+    def get_csr_builder(self, public_key: pkcs11.PublicKey, issuer_public_key: pkcs11.PublicKey, issuer_dn: Name, issuer_serial: int):
+        csr_builder = x509.CertificateSigningRequestBuilder().subject_name(self.x509.subject_name.to_obj())
+        csr_builder.add_extension(self.x509.key_usage.to_obj(), critical=self.x509.key_usage.critical)
+        csr_builder.add_extension(self.x509.extended_key_usage.to_obj(), critical=self.x509.extended_key_usage.critical)
+        csr_builder.add_extension(self.x509.basic_constraints.to_obj(), critical=self.x509.basic_constraints.critical)
+
+        skid = pkcs11_pub_key_to_bytes(public_key)
+        csr_builder.add_extension(x509.SubjectKeyIdentifier(skid), critical=False)
+
+        if self.signed_by is None:
+            csr_builder.add_extension(x509.AuthorityKeyIdentifier(None, None, None), critical=False)
+        else:
+            akid = pkcs11_pub_key_to_bytes(issuer_public_key)
+            csr_builder.add_extension(x509.AuthorityKeyIdentifier(
+                key_identifier=akid,
+                authority_cert_issuer=[DirectoryName(issuer_dn)],
+                authority_cert_serial_number=issuer_serial,
+            ), critical=False)
+
+        csr_builder.add_extension(self.x509.subject_alternative_name.to_obj(), critical=False)
+        csr_builder.add_extension(self.x509.authority_info_access.to_obj(), critical=False)
+        csr_builder.add_extension(self.x509.crl_distribution_points.to_obj(), critical=False)
+        return csr_builder
+
+
     @property
     def p11_attributes(self):
         attributes: dict[pkcs11.Attribute, Any] = {
             pkcs11.Attribute.LABEL: self.label,
+            pkcs11.Attribute.ID: hashlib.sha3_256(self.name.encode()).digest(),
         }
 
         if self.key.algorithm == SupportedKeyAlgorithms.rsa:

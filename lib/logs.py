@@ -52,14 +52,29 @@ class ErrorFilter(logging.Filter):
 class ColoredFormatter(logging.Formatter):  # pylint: disable=too-few-public-methods
     """Formatter that adds color codes to log messages."""
 
-    RED = '\033[91m'
-    RESET = '\033[0m'
+    RESET = "\033[0m"
+
+    LEVEL_COLORS = {
+        "DEBUG": "\033[36m",
+        "INFO": "\033[32m",
+        "WARNING": "\033[33m",
+        "ERROR": "\033[31m",
+        "CRITICAL": "\033[41m",
+    }
 
     def format(self, record):
-        formatted = super().format(record)
-        if record.levelno >= logging.ERROR:
-            formatted = f"{self.RED}{formatted}{self.RESET}"
+        levelname = record.levelname
+        color = self.LEVEL_COLORS.get(levelname, "")
 
+        padded = f"{levelname:<6}"
+
+        if color:
+            record.levelname = f"{color}{padded}{self.RESET}"
+        else:
+            record.levelname = padded
+
+        formatted = super().format(record)
+        record.levelname = levelname
         return formatted
 
 
@@ -87,22 +102,22 @@ def setup_logger(config: LoggingConfig):
         'formatters': {
             'verbose': {
                 '()': ColoredFormatter,
-                'format': '%(asctime)s [%(name)-30s] [%(levelname)-8s] %(message)s',
+                'format': '%(asctime)s [%(name)-12s] [%(levelname)-7s] %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S',
             },
             'simple': {
                 '()': ColoredFormatter,
-                'format': '%(asctime)s [%(levelname)-8s] %(message)s',
+                'format': '%(asctime)s [%(levelname)-7s] %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S',
             },
             'verbose_error': {
                 '()': ColoredFormatter,
-                'format': '%(asctime)s [%(name)-30s] [%(levelname)-8s] %(message)s',
+                'format': '%(asctime)s [%(name)-30s] [%(levelname)-7s] %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S',
             },
             'simple_error': {
                 '()': ColoredFormatter,
-                'format': '%(asctime)s [%(levelname)-8s] %(message)s',
+                'format': '%(asctime)s [%(levelname)-7s] %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S',
             },
         },

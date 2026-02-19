@@ -24,7 +24,7 @@ class DataValidation:
     """Abstract base class for data validation and encryption modules."""
 
     def __init__(self, *, validation_key: str = None):
-        shared_logger.info("Initializing Data module")
+        shared_logger.debug("Initializing DataValidation module")
         self.validation_key = validation_key.encode("utf-8")
 
     def sign(self, data: bytes) -> str:

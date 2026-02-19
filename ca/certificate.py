@@ -8,7 +8,6 @@ Classes:
                  generating, signing, and managing CRLs.
 """
 from ca.database import CertificateEntity
-from ca.main import VismCA
 from ca.config import CertificateConfig, ca_logger
 from ca.p11 import PKCS11PrivKey
 from ca.p11.key import PKCS11PubKey
@@ -53,7 +52,6 @@ class Certificate:
 
         self.controller.p11_client.generate_keypair(self.priv_key, self.pub_key)
         if self.config.signed_by is None:
-            # TODO: Generate root cert
             pass
 
 

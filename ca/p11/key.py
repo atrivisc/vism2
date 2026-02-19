@@ -8,11 +8,10 @@ def _build_template(
         base_template: dict[Attribute, object],
         key_type: pkcs11.KeyType,
         label: str,
-        label_suffix: str,
         overrides_by_type: dict[pkcs11.KeyType, dict[Attribute, object]],
 ) -> dict[Attribute, object]:
     overrides = overrides_by_type.get(key_type, {})
-    return base_template | overrides | {Attribute.LABEL: f"{label}-{label_suffix}"}
+    return base_template | overrides | {Attribute.LABEL: label}
 
 
 class PKCS11PubKey(PKCS11Object):
@@ -23,15 +22,11 @@ class PKCS11PubKey(PKCS11Object):
         Attribute.WRAP: False,
         Attribute.MODIFIABLE: False,
     }
-
-    @property
-    def template(self):
-        suffix = "public"
-        overrides_by_type = {
-            pkcs11.KeyType.EC: {Attribute.VERIFY: False},
-            pkcs11.KeyType.RSA: {Attribute.ENCRYPT: True},
-        }
-        return _build_template(self.BASE_TEMPLATE, self.key_type, self.label, suffix, overrides_by_type)
+    LABEL_SUFFIX = "public"
+    OVERRIDES: dict[pkcs11.KeyType, dict[Attribute, object]] = {
+        pkcs11.KeyType.EC: {Attribute.VERIFY: False},
+        pkcs11.KeyType.RSA: {Attribute.ENCRYPT: True},
+    }
 
 
 class PKCS11PrivKey(PKCS11Object):
@@ -44,12 +39,8 @@ class PKCS11PrivKey(PKCS11Object):
         Attribute.MODIFIABLE: False,
         Attribute.SENSITIVE: True,
     }
-
-    @property
-    def template(self):
-        suffix = "private"
-        overrides_by_type = {
-            pkcs11.KeyType.EC: {Attribute.ENCRYPT: False},
-            pkcs11.KeyType.RSA: {Attribute.DECRYPT: True},
-        }
-        return _build_template(self.BASE_TEMPLATE, self.key_type, self.label, suffix, overrides_by_type)
+    LABEL_SUFFIX = "private"
+    OVERRIDES: dict[pkcs11.KeyType, dict[Attribute, object]] = {
+        pkcs11.KeyType.EC: {Attribute.ENCRYPT: False},
+        pkcs11.KeyType.RSA: {Attribute.DECRYPT: True},
+    }

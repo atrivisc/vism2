@@ -1,11 +1,14 @@
 """Utility functions for VISM components."""
-
+import hashlib
 import ipaddress
 import re
 import subprocess
 import base64
+
+import pkcs11
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 from starlette.requests import Request
 
@@ -117,3 +120,35 @@ def fix_base64_padding(base64_string):
     if padding_needed != 0:
         base64_string += "=" * (4 - padding_needed)
     return base64_string
+
+def pkcs11_pub_key_to_bytes(public_key: pkcs11.PublicKey) -> bytes:
+    if public_key.key_type == pkcs11.KeyType.RSA:
+        public_numbers = rsa.RSAPublicNumbers(
+            int.from_bytes(public_key[pkcs11.Attribute.PUBLIC_EXPONENT], 'big'),
+            int.from_bytes(public_key[pkcs11.Attribute.MODULUS], 'big')
+        )
+        rsa_pubkey = public_numbers.public_key()
+        der_bytes = rsa_pubkey.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+
+        skid = hashlib.sha1(der_bytes).digest()
+    elif public_key.key_type == pkcs11.KeyType.EC:
+        ec_point = public_key[pkcs11.Attribute.EC_POINT]
+
+        if ec_point[0] == 0x04:
+            ec_point = ec_point[1:]
+
+        curve = ec.SECP256R1()
+        ec_pubkey = ec.EllipticCurvePublicKey.from_encoded_point(curve, ec_point)
+
+        der_bytes = ec_pubkey.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        skid = hashlib.sha1(der_bytes).digest()
+    else:
+        raise ValueError(f"Unsupported key type: {public_key.key_type}")
+
+    return skid

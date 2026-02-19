@@ -2,12 +2,11 @@
 
 import asyncio
 
-from ca.certificate import Certificate
+from ca import Certificate
 from ca.config import CAConfig, ca_logger
 from ca.database import VismCADatabase
 from ca.p11 import PKCS11Client
 from lib.controller import Controller
-from lib.errors import VismBreakingException
 from lib.s3 import AsyncS3Client
 
 
@@ -32,7 +31,7 @@ class VismCA(Controller):
         super().__init__()
         self.certificates: dict[str, Certificate] = {}
         self.p11_client = PKCS11Client(self.config.pkcs11)
-        self.s3_client = AsyncS3Client(self.config.s3_config)
+        self.s3_client = AsyncS3Client(self.config.s3)
 
     # async def update_crl(self):
     #     """Updates CRLs for all certificates managed by the CA."""
@@ -44,38 +43,31 @@ class VismCA(Controller):
     #         cert = Certificate(self, cert_config.name)
     #         await cert.update_crl()
     #
-    # async def run(self):
-    #     """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
-    #     ca_logger.info("Starting CA")
-    #     try:
-    #         await self.init_certificates()
-    #         await self.data_exchange_module.receive_csr()
-    #         await self._shutdown_event.wait()
-    #     except asyncio.CancelledError:
-    #         ca_logger.info("CA shutting down.")
-    #     except Exception as e:
-    #         ca_logger.critical(f"CA encountered a fatal error: {e}")
-    #         raise e
-    #     finally:
-    #         await asyncio.shield(self.data_exchange_module.cleanup(full=True))
-    #
-    # async def init_certificates(self):
-    #     """Creates and manages certificates for the CA."""
-    #     ca_logger.info("Initializing certificates")
-    #     for cert_config in self.config.x509_certificates:
-    #         cert = None
-    #         try:
-    #             cert = Certificate(self, cert_config.name)
-    #             await cert.create()
-    #             await cert.update_crl()
-    #             ca_logger.info("Done loading certificate '%s'", cert_config.name)
-    #             cert.cleanup()
-    #         except Exception as e:
-    #             if cert is not None:
-    #                 cert.cleanup()
-    #             raise VismBreakingException(
-    #                 f"Failed to create CA certificate '{cert_config.name}': {e}"
-    #             ) from e
+    async def update_crl(self):
+        pass
+
+    async def run(self):
+        """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
+        ca_logger.info("Starting CA")
+        try:
+            await self.setup_data_exchange_module()
+            await self.init_certificates()
+            await self.data_exchange_module.receive_csr()
+            await self._shutdown_event.wait()
+        except asyncio.CancelledError:
+            ca_logger.info("CA shutting down.")
+        except Exception as e:
+            ca_logger.critical(f"CA encountered a fatal error: {e}")
+            raise e
+        finally:
+            await asyncio.shield(self.data_exchange_module.cleanup(full=True))
+
+    async def init_certificates(self):
+        """Creates and manages certificates for the CA."""
+        ca_logger.info("Initializing certificates")
+        for cert_config in self.config.x509_certificates:
+            cert = Certificate(self, cert_config)
+            await cert.load()
 
 def main(function: str = None):
     """Async entrypoint for the CA."""
