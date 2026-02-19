@@ -8,6 +8,8 @@ from ca.database import VismCADatabase
 from ca.p11 import PKCS11Client
 from lib.controller import Controller
 from lib.errors import VismBreakingException
+from lib.s3 import AsyncS3Client
+
 
 class VismCA(Controller):
     """
@@ -30,6 +32,7 @@ class VismCA(Controller):
         super().__init__()
         self.certificates: dict[str, Certificate] = {}
         self.p11_client = PKCS11Client(self.config.pkcs11)
+        self.s3_client = AsyncS3Client(self.config.s3_config)
 
     # async def update_crl(self):
     #     """Updates CRLs for all certificates managed by the CA."""
