@@ -61,7 +61,7 @@ class Certificate:
         else:
             raise NotImplementedError
 
-        signature_algorithm.setComponentByName("algorithm", algorithm_oid)
+        signature_algorithm.setComponentByName("algorithm", univ.ObjectIdentifier(algorithm_oid))
         csr.setComponentByName("signatureAlgorithm", signature_algorithm)
 
         signature_bytes = self.p11_client.sign_csr_info(self.priv_key, der_encoder(csr_info), self.CSR_SIGN_HASH_ALG)

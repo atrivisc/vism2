@@ -16,7 +16,7 @@ from cryptography import x509
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
 from cryptography.x509 import RFC822Name, IPAddress, DNSName, DirectoryName, Name, UniformResourceIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
-from pyasn1.type import univ
+from pyasn1.type import univ, char
 from pyasn1_modules.rfc2986 import RDNSequence, RelativeDistinguishedName, AttributeTypeAndValue
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
@@ -98,7 +98,7 @@ class X509ConfigSubjectName:
             rdn = RelativeDistinguishedName()
             attr = AttributeTypeAndValue()
             attr.setComponentByName("type", univ.ObjectIdentifier(attribute_type.dotted_string))
-            attr.setComponentByName("value", univ.OctetString(value))
+            attr.setComponentByName("value", char.UTF8String(value))
             rdn.append(attr)
             rdn_seq.append(rdn)
 
