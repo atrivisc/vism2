@@ -9,23 +9,19 @@ import hashlib
 import ipaddress
 import logging
 import os
-from dataclasses import field
 from typing import ClassVar, Any
 import idna
-import cryptography.x509
 import pkcs11
 from cryptography import x509
-from cryptography.hazmat._oid import NameOID
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.x509 import RFC822Name, IPAddress, DNSName, DirectoryName, Name, UniformResourceIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
+from pyasn1.type import univ
+from pyasn1_modules.rfc2986 import RDNSequence, RelativeDistinguishedName, AttributeTypeAndValue
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from lib.config import VismConfig
-from lib.util import pkcs11_pub_key_to_bytes
 
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
@@ -96,21 +92,26 @@ class X509ConfigSubjectName:
     locality: str = None
     organization: str = None
 
-    def to_obj(self):
-        attrs = []
-        if self.common_name:
-            attrs.append(x509.NameAttribute(NameOID.COMMON_NAME, self.common_name))
-        if self.country:
-            attrs.append(x509.NameAttribute(NameOID.COUNTRY_NAME, self.country))
-        if self.state_or_province:
-            attrs.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, self.state_or_province))
-        if self.locality:
-            attrs.append(x509.NameAttribute(NameOID.LOCALITY_NAME, self.locality))
-        if self.organization:
-            attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.organization))
+    @staticmethod
+    def _add_rdn(rdn_seq: RDNSequence, attribute_type: ObjectIdentifier, value: str):
+        if value:
+            rdn = RelativeDistinguishedName()
+            attr = AttributeTypeAndValue()
+            attr.setComponentByName("type", univ.ObjectIdentifier(attribute_type.dotted_string))
+            attr.setComponentByName("value", univ.OctetString(value))
+            rdn.append(attr)
+            rdn_seq.append(rdn)
 
-        return x509.Name(attrs)
+    def to_rdn_seq(self):
+        rdn_seq = RDNSequence()
 
+        self._add_rdn(rdn_seq, x509.NameOID.COMMON_NAME, self.common_name)
+        self._add_rdn(rdn_seq, x509.NameOID.COUNTRY_NAME, self.country)
+        self._add_rdn(rdn_seq, x509.NameOID.STATE_OR_PROVINCE_NAME, self.state_or_province)
+        self._add_rdn(rdn_seq, x509.NameOID.LOCALITY_NAME, self.locality)
+        self._add_rdn(rdn_seq, x509.NameOID.ORGANIZATION_NAME, self.organization)
+
+        return rdn_seq
 
 @dataclass
 class X509ConfigKeyUsage:
@@ -141,11 +142,12 @@ class X509ConfigKeyUsage:
 
 @dataclass
 class X509ConfigExtendedKeyUsage:
-    usages: list[ObjectIdentifier]
+    usages: list[str]
     critical: bool = False
 
     def to_obj(self):
-        return x509.ExtendedKeyUsage(usages=self.usages)
+        usages = [ObjectIdentifier(usage) for usage in self.usages]
+        return x509.ExtendedKeyUsage(usages=usages)
 
 @dataclass
 class X509ConfigBasicConstraints:
@@ -236,10 +238,10 @@ class X509Config:
     subject_name: X509ConfigSubjectName
     basic_constraints: X509ConfigBasicConstraints
     key_usage: X509ConfigKeyUsage
-    extended_key_usage: X509ConfigExtendedKeyUsage
-    subject_alternative_name: X509ConfigSubjectAlternativeName
-    authority_info_access: X509ConfigAuthorityInfoAccess
-    crl_distribution_points: X509ConfigCRLDistributionPoints
+    authority_info_access: X509ConfigAuthorityInfoAccess = None
+    crl_distribution_points: X509ConfigCRLDistributionPoints = None
+    extended_key_usage: X509ConfigExtendedKeyUsage = None
+    subject_alternative_name: X509ConfigSubjectAlternativeName = None
 
 
 @dataclass
@@ -257,7 +259,7 @@ class CertificateConfig:
     x509: X509Config = None
 
     @property
-    def label(self):
+    def key_label(self):
         if self.key.algorithm == SupportedKeyAlgorithms.rsa:
             return f"{self.name}-{self.key.algorithm.value}-{self.key.bits}"
         if self.key.algorithm == SupportedKeyAlgorithms.ec:
@@ -265,35 +267,11 @@ class CertificateConfig:
         else:
             raise ValueError(f"Unsupported key algorithm: {self.key.algorithm}")
 
-    def get_csr_builder(self, public_key: pkcs11.PublicKey, issuer_public_key: pkcs11.PublicKey, issuer_dn: Name, issuer_serial: int):
-        csr_builder = x509.CertificateSigningRequestBuilder().subject_name(self.x509.subject_name.to_obj())
-        csr_builder.add_extension(self.x509.key_usage.to_obj(), critical=self.x509.key_usage.critical)
-        csr_builder.add_extension(self.x509.extended_key_usage.to_obj(), critical=self.x509.extended_key_usage.critical)
-        csr_builder.add_extension(self.x509.basic_constraints.to_obj(), critical=self.x509.basic_constraints.critical)
-
-        skid = pkcs11_pub_key_to_bytes(public_key)
-        csr_builder.add_extension(x509.SubjectKeyIdentifier(skid), critical=False)
-
-        if self.signed_by is None:
-            csr_builder.add_extension(x509.AuthorityKeyIdentifier(None, None, None), critical=False)
-        else:
-            akid = pkcs11_pub_key_to_bytes(issuer_public_key)
-            csr_builder.add_extension(x509.AuthorityKeyIdentifier(
-                key_identifier=akid,
-                authority_cert_issuer=[DirectoryName(issuer_dn)],
-                authority_cert_serial_number=issuer_serial,
-            ), critical=False)
-
-        csr_builder.add_extension(self.x509.subject_alternative_name.to_obj(), critical=False)
-        csr_builder.add_extension(self.x509.authority_info_access.to_obj(), critical=False)
-        csr_builder.add_extension(self.x509.crl_distribution_points.to_obj(), critical=False)
-        return csr_builder
-
 
     @property
-    def p11_attributes(self):
+    def key_p11_attributes(self):
         attributes: dict[pkcs11.Attribute, Any] = {
-            pkcs11.Attribute.LABEL: self.label,
+            pkcs11.Attribute.LABEL: self.key_label,
             pkcs11.Attribute.ID: hashlib.sha3_256(self.name.encode()).digest(),
         }
 

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Self
 
 import pkcs11
 from pkcs11 import Attribute, LocalDomainParameters
@@ -14,7 +14,10 @@ class PKCS11Object:
 
     @property
     def label(self) -> str:
-        return self.attributes[pkcs11.Attribute.LABEL] + (f"-{self.LABEL_SUFFIX}" if self.LABEL_SUFFIX else "")
+        label = self.attributes[pkcs11.Attribute.LABEL]
+        if self.LABEL_SUFFIX and not label.endswith(self.LABEL_SUFFIX):
+            label += f'-{self.LABEL_SUFFIX}'
+        return label
 
     @property
     def id(self) -> str:
@@ -40,3 +43,7 @@ class PKCS11Object:
             pkcs11.Attribute.ID: self.id,
         }
         return self.BASE_TEMPLATE | overrides | template
+
+    @classmethod
+    def from_p11_obj(cls, obj: pkcs11.Object) -> Self:
+        return cls(attributes=dict(obj))

@@ -26,6 +26,8 @@ class VismCA(Controller):
 
     databaseClass = VismCADatabase
     configClass = CAConfig
+    database: VismCADatabase
+    config: CAConfig
 
     def __init__(self):
         super().__init__()
@@ -66,7 +68,8 @@ class VismCA(Controller):
         """Creates and manages certificates for the CA."""
         ca_logger.info("Initializing certificates")
         for cert_config in self.config.x509_certificates:
-            cert = Certificate(self, cert_config)
+            db_entry = self.database.get_cert_by_name(cert_config.name)
+            cert = Certificate(db_entry, cert_config, self.p11_client, None)
             await cert.load()
 
 def main(function: str = None):
