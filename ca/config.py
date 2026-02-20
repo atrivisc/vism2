@@ -14,14 +14,16 @@ import idna
 import pkcs11
 from cryptography import x509
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
-from cryptography.x509 import RFC822Name, IPAddress, DNSName, DirectoryName, Name, UniformResourceIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
 from pyasn1.type import univ, char
 from pyasn1_modules.rfc2986 import RDNSequence, RelativeDistinguishedName, AttributeTypeAndValue
+from pyasn1_modules.rfc5280 import Extension, AuthorityInfoAccessSyntax, AccessDescription, GeneralName, KeyUsage, \
+    SubjectAltName
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from lib.config import VismConfig
+from pyasn1.codec.der.encoder import encode as der_encoder
 
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
@@ -117,7 +119,7 @@ class X509ConfigSubjectName:
 class X509ConfigKeyUsage:
     """X509 key usage configuration."""
     digital_signature: bool = False
-    content_commitment: bool = False
+    non_repudiation: bool = False
     key_encipherment: bool = False
     data_encipherment: bool = False
     key_agreement: bool = False
@@ -127,18 +129,29 @@ class X509ConfigKeyUsage:
     decipher_only: bool = False
     critical: bool = False
 
-    def to_obj(self):
-        return x509.KeyUsage(
-            digital_signature=self.digital_signature,
-            content_commitment=self.content_commitment,
-            key_encipherment=self.key_encipherment,
-            data_encipherment=self.data_encipherment,
-            key_agreement=self.key_agreement,
-            key_cert_sign=self.key_cert_sign,
-            crl_sign=self.crl_sign,
-            encipher_only=self.encipher_only,
-            decipher_only=self.decipher_only,
+    def to_ans1_extension(self):
+        key_usage = KeyUsage(
+            f"{int(self.digital_signature)}"
+            f"{int(self.non_repudiation)}"
+            f"{int(self.key_encipherment)}"
+            f"{int(self.data_encipherment)}"
+            f"{int(self.key_agreement)}"
+            f"{int(self.key_cert_sign)}"
+            f"{int(self.crl_sign)}"
+            f"{int(self.encipher_only)}"
+            f"{int(self.decipher_only)}"
         )
+
+        extension = Extension()
+        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_KEY_USAGE.dotted_string))
+
+        if self.critical:
+            extension.setComponentByName("critical", univ.Boolean(True))
+
+        key_usage_der = der_encoder(key_usage)
+        extension.setComponentByName("extnValue", key_usage_der)
+        return extension
+
 
 @dataclass
 class X509ConfigExtendedKeyUsage:
@@ -165,19 +178,33 @@ class X509ConfigSubjectAlternativeName:
     dns: list[str] = None
     emails: list[str] = None
 
-    def to_obj(self):
-        names = []
-        for ip in self.ips:
-            ip_address = ipaddress.ip_address(ip)
-            names.append(IPAddress(ip_address))
+    def to_ans1_extension(self):
+        extension = Extension()
+        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_SUBJECT_ALTERNATIVE_NAME.dotted_string))
 
-        for dns in self.dns:
-            names.append(DNSName(idna.encode(dns).decode()))
+        subject_alt_names = SubjectAltName()
+        for ip in self.ips:
+            name = GeneralName()
+            name.setComponentByName("iPAddress", univ.OctetString(ip))
+            subject_alt_names.append(name)
+
+        for dn in self.dns:
+            name = GeneralName()
+            name.setComponentByName("dNSName", char.IA5String(dn))
+            subject_alt_names.append(name)
 
         for email in self.emails:
-            names.append(RFC822Name(idna.encode(email).decode()))
+            name = GeneralName()
+            name.setComponentByName("rfc822Name", char.IA5String(email))
+            subject_alt_names.append(name)
 
-        return x509.SubjectAlternativeName(names)
+        subject_alt_names_der = der_encoder(subject_alt_names)
+        extension.setComponentByName("extnValue", subject_alt_names_der)
+        return extension
+
+class X509ConfigAccessDescriptionMethod(enum.Enum):
+    OCSP = "OCSP"
+    CA = "CA"
 
 class X509ConfigAccessDescriptionLocationType(enum.Enum):
     URL = "URL"
@@ -185,44 +212,53 @@ class X509ConfigAccessDescriptionLocationType(enum.Enum):
 @dataclass
 class X509ConfigAccessDescription:
     """X509 authority info access description configuration."""
-    access_method: str
-    access_location_type: X509ConfigAccessDescriptionLocationType
+    access_method: X509ConfigAccessDescriptionMethod
     access_location: str
+    access_location_type: X509ConfigAccessDescriptionLocationType = X509ConfigAccessDescriptionLocationType.URL
 
-    def to_obj(self):
+    def to_ans1(self):
+        access_description = AccessDescription()
+        access_method = univ.ObjectIdentifier(
+            x509.OID_OCSP if self.access_method == X509ConfigAccessDescriptionMethod.OCSP else x509.OID_CA_ISSUERS
+        )
+        access_location = GeneralName()
         if self.access_location_type == X509ConfigAccessDescriptionLocationType.URL:
-            location = UniformResourceIdentifier(self.access_location)
+            access_location.setComponentByName("uniformResourceIdentifier", self.access_location)
         else:
             raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
 
-        if self.access_location.upper() == "CA_ISSUERS":
-            return x509.AccessDescription(access_method=x509.OID_CA_ISSUERS, access_location=location)
-        elif self.access_location.upper() == "OCSP":
-            return x509.AccessDescription(access_method=x509.OID_OCSP, access_location=location)
-        else:
-            raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
+        access_description.setComponentByName("accessMethod", access_method)
+        access_description.setComponentByName("accessLocation", access_location)
+        return access_description
 
 
 @dataclass
 class X509ConfigAuthorityInfoAccess:
     """X509 authority info access configuration."""
     descriptions: list[X509ConfigAccessDescription]
+    critical: bool = False
 
-    def to_obj(self):
-        descriptions = [desc.to_obj() for desc in self.descriptions]
-        return x509.AuthorityInformationAccess(descriptions)
+    def to_ans1_extension(self):
+        aia = AuthorityInfoAccessSyntax()
+
+        for description in self.descriptions:
+            aia.append(description.to_ans1())
+
+        extension = Extension()
+        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string))
+
+        if self.critical:
+            extension.setComponentByName("critical", univ.Boolean(True))
+
+        aia_der = der_encoder(aia)
+        extension.setComponentByName("extnValue", aia_der)
+        return extension
 
 @dataclass
 class X509ConfigDistributionPoint:
     """X509 distribution point configuration."""
     names: list[str]
     reasons: list[str]
-
-    def to_obj(self):
-        reasons = frozenset([x509.ReasonFlags.__getitem__(reason) for reason in self.reasons])
-        names = [x509.UniformResourceIdentifier(name) for name in self.names]
-        return x509.DistributionPoint(names, relative_name=None, crl_issuer=None, reasons=reasons)
-
 
 @dataclass
 class X509ConfigCRLDistributionPoints:
@@ -237,7 +273,7 @@ class X509Config:
     """X509 configuration."""
     subject_name: X509ConfigSubjectName
     basic_constraints: X509ConfigBasicConstraints
-    key_usage: X509ConfigKeyUsage
+    key_usage: X509ConfigKeyUsage = None
     authority_info_access: X509ConfigAuthorityInfoAccess = None
     crl_distribution_points: X509ConfigCRLDistributionPoints = None
     extended_key_usage: X509ConfigExtendedKeyUsage = None
