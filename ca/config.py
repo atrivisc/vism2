@@ -4,13 +4,13 @@ Configuration module for Vism CA.
 This module provides configuration classes for the CA, including database
 configuration, certificate configuration, and the main CA configuration class.
 """
+import abc
 import enum
 import hashlib
-import ipaddress
 import logging
 import os
+from dataclasses import field
 from typing import ClassVar, Any
-import idna
 import pkcs11
 from cryptography import x509
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
@@ -18,7 +18,8 @@ from pkcs11.util.ec import encode_named_curve_parameters
 from pyasn1.type import univ, char
 from pyasn1_modules.rfc2986 import RDNSequence, RelativeDistinguishedName, AttributeTypeAndValue
 from pyasn1_modules.rfc5280 import Extension, AuthorityInfoAccessSyntax, AccessDescription, GeneralName, KeyUsage, \
-    SubjectAltName
+    SubjectAltName, BasicConstraints, ExtKeyUsageSyntax, KeyPurposeId, Name, CRLDistributionPoints, DistributionPoint, \
+    DistributionPointName, GeneralNames, ReasonFlags
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
@@ -32,6 +33,27 @@ class SupportedKeyAlgorithms(enum.Enum):
     """Supported key algorithms."""
     rsa = "RSA"
     ec = "EC"
+
+@dataclass
+class X509ConfigExtension(metaclass=abc.ABCMeta):
+    """X509 base extension configuration."""
+    OID: ClassVar[str]
+
+    critical: bool = field(default=False)
+
+    @abc.abstractmethod
+    def to_asn1(self):
+        raise NotImplementedError()
+
+    def to_asn1_ext(self):
+        extn = Extension()
+        extn.setComponentByName("extnID", univ.ObjectIdentifier(self.OID))
+
+        if self.critical:
+            extn.setComponentByName("critical", univ.Boolean(True))
+
+        extn.setComponentByName("extnValue", der_encoder(self.to_asn1()))
+        return extn
 
 
 @dataclass
@@ -115,9 +137,16 @@ class X509ConfigSubjectName:
 
         return rdn_seq
 
+    def to_asn1(self):
+        name = Name()
+        name.setComponentByName("rdnSequence", self.to_rdn_seq())
+        return name
+
 @dataclass
-class X509ConfigKeyUsage:
+class X509ConfigKeyUsage(X509ConfigExtension):
     """X509 key usage configuration."""
+    OID: ClassVar[str] = x509.OID_KEY_USAGE.dotted_string
+
     digital_signature: bool = False
     non_repudiation: bool = False
     key_encipherment: bool = False
@@ -127,10 +156,9 @@ class X509ConfigKeyUsage:
     crl_sign: bool = False
     encipher_only: bool = False
     decipher_only: bool = False
-    critical: bool = False
 
-    def to_ans1_extension(self):
-        key_usage = KeyUsage(
+    def to_asn1(self):
+        return KeyUsage(
             f"{int(self.digital_signature)}"
             f"{int(self.non_repudiation)}"
             f"{int(self.key_encipherment)}"
@@ -142,46 +170,45 @@ class X509ConfigKeyUsage:
             f"{int(self.decipher_only)}"
         )
 
-        extension = Extension()
-        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_KEY_USAGE.dotted_string))
-
-        if self.critical:
-            extension.setComponentByName("critical", univ.Boolean(True))
-
-        key_usage_der = der_encoder(key_usage)
-        extension.setComponentByName("extnValue", key_usage_der)
-        return extension
-
 
 @dataclass
-class X509ConfigExtendedKeyUsage:
-    usages: list[str]
-    critical: bool = False
+class X509ConfigExtendedKeyUsage(X509ConfigExtension):
+    OID: ClassVar[str] = x509.OID_EXTENDED_KEY_USAGE.dotted_string
+    usages: list[str] = field(default_factory=list)
 
-    def to_obj(self):
-        usages = [ObjectIdentifier(usage) for usage in self.usages]
-        return x509.ExtendedKeyUsage(usages=usages)
+    def to_asn1(self):
+        extended_key_usage = ExtKeyUsageSyntax()
+
+        for usage in self.usages:
+            extended_key_usage.append(KeyPurposeId(usage))
+
+        return extended_key_usage
 
 @dataclass
-class X509ConfigBasicConstraints:
+class X509ConfigBasicConstraints(X509ConfigExtension):
+    OID: ClassVar[str] = x509.OID_BASIC_CONSTRAINTS.dotted_string
+
     ca: bool = False
     path_length: int = 0
-    critical: bool = False
 
-    def to_obj(self):
-        return x509.BasicConstraints(self.ca, self.path_length)
+    def to_asn1(self):
+        basic_constraints = BasicConstraints()
+        basic_constraints.setComponentByName("cA", self.ca)
+        basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
+
+        return basic_constraints
+
 
 @dataclass
-class X509ConfigSubjectAlternativeName:
+class X509ConfigSubjectAlternativeName(X509ConfigExtension):
     """X509 subject alternative name configuration."""
+    OID: ClassVar[str] = x509.OID_SUBJECT_ALTERNATIVE_NAME.dotted_string
+
     ips: list[str] = None
     dns: list[str] = None
     emails: list[str] = None
 
-    def to_ans1_extension(self):
-        extension = Extension()
-        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_SUBJECT_ALTERNATIVE_NAME.dotted_string))
-
+    def to_asn1(self):
         subject_alt_names = SubjectAltName()
         for ip in self.ips:
             name = GeneralName()
@@ -198,23 +225,21 @@ class X509ConfigSubjectAlternativeName:
             name.setComponentByName("rfc822Name", char.IA5String(email))
             subject_alt_names.append(name)
 
-        subject_alt_names_der = der_encoder(subject_alt_names)
-        extension.setComponentByName("extnValue", subject_alt_names_der)
-        return extension
+        return subject_alt_names
 
 class X509ConfigAccessDescriptionMethod(enum.Enum):
     OCSP = "OCSP"
     CA = "CA"
 
-class X509ConfigAccessDescriptionLocationType(enum.Enum):
+class X509ConfigLocationType(enum.Enum):
     URL = "URL"
 
 @dataclass
 class X509ConfigAccessDescription:
     """X509 authority info access description configuration."""
-    access_method: X509ConfigAccessDescriptionMethod
-    access_location: str
-    access_location_type: X509ConfigAccessDescriptionLocationType = X509ConfigAccessDescriptionLocationType.URL
+    access_method: X509ConfigAccessDescriptionMethod = None
+    access_location: str = None
+    access_location_type: X509ConfigLocationType = X509ConfigLocationType.URL
 
     def to_ans1(self):
         access_description = AccessDescription()
@@ -222,7 +247,7 @@ class X509ConfigAccessDescription:
             x509.OID_OCSP if self.access_method == X509ConfigAccessDescriptionMethod.OCSP else x509.OID_CA_ISSUERS
         )
         access_location = GeneralName()
-        if self.access_location_type == X509ConfigAccessDescriptionLocationType.URL:
+        if self.access_location_type == X509ConfigLocationType.URL:
             access_location.setComponentByName("uniformResourceIdentifier", self.access_location)
         else:
             raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
@@ -233,40 +258,81 @@ class X509ConfigAccessDescription:
 
 
 @dataclass
-class X509ConfigAuthorityInfoAccess:
+class X509ConfigAuthorityInfoAccess(X509ConfigExtension):
     """X509 authority info access configuration."""
-    descriptions: list[X509ConfigAccessDescription]
-    critical: bool = False
+    OID: ClassVar[str] = x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string
 
-    def to_ans1_extension(self):
-        aia = AuthorityInfoAccessSyntax()
+    descriptions: list[X509ConfigAccessDescription] = field(default_factory=list)
+
+    def to_asn1(self):
+        authority_info_access = AuthorityInfoAccessSyntax()
 
         for description in self.descriptions:
-            aia.append(description.to_ans1())
+            authority_info_access.append(description.to_ans1())
 
-        extension = Extension()
-        extension.setComponentByName("extnID", univ.ObjectIdentifier(x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string))
+        return authority_info_access
 
-        if self.critical:
-            extension.setComponentByName("critical", univ.Boolean(True))
 
-        aia_der = der_encoder(aia)
-        extension.setComponentByName("extnValue", aia_der)
-        return extension
+class X509ConfigDistributionPointReasonFlags(enum.Enum):
+    unused = "unused"
+    keyCompromise = "keyCompromise"
+    cACompromise = "cACompromise"
+    affiliationChanged = "affiliationChanged"
+    superseded = "superseded"
+    cessationOfOperation = "cessationOfOperation"
+    certificateHold = "certificateHold"
+    privilegeWithdrawn = "privilegeWithdrawn"
+    aACompromise = "aACompromise"
 
 @dataclass
 class X509ConfigDistributionPoint:
     """X509 distribution point configuration."""
-    names: list[str]
-    reasons: list[str]
+    names: list[str] = field(default_factory=list)
+    names_type: X509ConfigLocationType = X509ConfigLocationType.URL
+    reasons: list[X509ConfigDistributionPointReasonFlags] = field(default_factory=list)
+
+    def to_asn1(self):
+        if self.names_type == X509ConfigLocationType.URL:
+            name_component = "uniformResourceIdentifier"
+        else:
+            raise NotImplementedError(f"Location type {self.names_type} is not implemented.")
+
+        dp = DistributionPoint()
+
+        dp_name = DistributionPointName()
+        names = GeneralNames()
+
+        for name in self.names:
+            name = GeneralName()
+            name.setComponentByName(name_component, char.IA5String(name))
+            names.append(name)
+
+        dp_name.setComponentByName("fullName", names)
+        dp.setComponentByName("distributionPoint", dp_name)
+
+        reasons = ReasonFlags(
+            "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
+        )
+        dp.setComponentByName("reasons", reasons)
+
+        return dp
+
 
 @dataclass
-class X509ConfigCRLDistributionPoints:
+class X509ConfigCRLDistributionPoints(X509ConfigExtension):
     """X509 CRL distribution points configuration."""
-    points: list[X509ConfigDistributionPoint]
+    OID: ClassVar[str] = x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string
 
-    def to_obj(self):
-        return x509.CRLDistributionPoints([point.to_obj() for point in self.points])
+    points: list[X509ConfigDistributionPoint] = field(default_factory=list)
+
+    def to_asn1(self):
+        crl_distribution_points = CRLDistributionPoints()
+
+        for point in self.points:
+            crl_distribution_points.append(point.to_asn1())
+
+        return crl_distribution_points
+
 
 @dataclass
 class X509Config:

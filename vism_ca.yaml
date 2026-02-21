@@ -30,8 +30,8 @@ vism_ca:
   x509_certificates:
     - name: "testing123"
       key:
-        algorithm: RSA
-        bits: 4096
+        algorithm: EC
+        curve: secp256k1
       x509:
         subject_name:
           common_name: "TEST"

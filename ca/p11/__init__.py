@@ -49,9 +49,10 @@ class PKCS11Client:
 
     @staticmethod
     def _generate_ec_keypair(session: Session, priv_key: PKCS11PrivKey, pub_key: PKCS11PubKey) -> tuple[pkcs11.PublicKey, pkcs11.PrivateKey]:
+        print(priv_key.template)
         shared_logger.debug(f"Generating EC keypair {priv_key.label}")
 
-        domain = session.create_domain_parameters(priv_key.key_type, {Attribute.EC_PARAMS: priv_key.ec_params})
+        domain = session.create_domain_parameters(priv_key.key_type, {Attribute.EC_PARAMS: priv_key.ec_params}, local=True)
         return domain.generate_keypair(
             private_template=priv_key.template,
             public_template=pub_key.template
@@ -67,13 +68,13 @@ class PKCS11Client:
                 pass
         return real_attrs
 
-    def sign_csr_info(self, privkey: PKCS11PrivKey, csr_info: bytes, hash_alg_name: str):
+    def sign_data(self, privkey: PKCS11PrivKey, data: bytes, hash_alg_name: str):
         with self.token.open(rw=True, user_pin=self.config.user_pin) as session:
             privkey_obj = self._get_raw_object(session, pkcs11.ObjectClass.PRIVATE_KEY, privkey.label)
             if privkey_obj is None:
                 raise ValueError(f"No private key found with label: {privkey.label}")
 
-            hash_bytes = hashlib.new(hash_alg_name, csr_info).digest()
+            hash_bytes = hashlib.new(hash_alg_name, data).digest()
             signature = privkey_obj.sign(hash_bytes)
 
             return signature
@@ -90,4 +91,4 @@ class PKCS11Client:
                 else:
                     raise ValueError(f"Unsupported key type: {priv_key.key_type}")
 
-            return PKCS11PubKey(self._get_p11_obj_attributes(p11_pubkey)), PKCS11PrivKey(self._get_p11_obj_attributes(p11_privkey))
+            return PKCS11PubKey(self._get_p11_obj_attributes(p11_pubkey), pub_key.ec_curve), PKCS11PrivKey(self._get_p11_obj_attributes(p11_privkey))

@@ -9,19 +9,23 @@ Classes:
 """
 import hashlib
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Self
 
 import pkcs11
 from cryptography import x509
-from cryptography.x509 import CertificateSigningRequestBuilder, SignatureAlgorithmOID
-from pyasn1.type import univ, useful
+from cryptography.x509 import SignatureAlgorithmOID
+from cryptography.x509.certificate_transparency import SignatureAlgorithm
+from pyasn1.type import univ, useful, tag, char
+from pyasn1.type.base import Asn1Item
+from pyasn1_modules.rfc2985 import SingleAttribute, ExtensionRequest, AttributeValues
 from pyasn1_modules.rfc2986 import CertificationRequestInfo, Name, SubjectPublicKeyInfo, AlgorithmIdentifier, \
-    CertificationRequest
+    CertificationRequest, AttributeType, Attributes
+from pyasn1.codec.native.decoder import decode as dict_decoder
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
-from pyasn1_modules.rfc5280 import TBSCertificate, CertificateSerialNumber, Validity, Time, UniqueIdentifier, \
-    Extensions, Extension
+from pyasn1_modules.rfc5280 import TBSCertificate, CertificateSerialNumber, Validity, Time, \
+    Extensions, Extension, Certificate as ANS1Certificate
 
 from ca.database import CertificateEntity
 from ca.config import CertificateConfig, ca_logger
@@ -36,6 +40,7 @@ class Certificate:
     CSR_VERSION = 0x0
     CERT_VERSION = 0x2
     CSR_SIGN_HASH_ALG = "SHA256"
+    CRT_SIGN_HASH_ALG = "SHA256"
 
     def __init__(self, db_entry: CertificateEntity, config: CertificateConfig, p11_client: PKCS11Client, issuer: Self | None):
         self.db_entry = db_entry
@@ -45,124 +50,153 @@ class Certificate:
         self.issuer = issuer
 
         self.priv_key = PKCS11PrivKey(self.config.key_p11_attributes)
-        self.pub_key = PKCS11PubKey(self.config.key_p11_attributes)
+        self.pub_key = PKCS11PubKey(self.config.key_p11_attributes, self.config.key.curve)
 
-    @property
-    def signature_algorithm_oid(self) -> str:
+    def _signature_algorithm_oid(self, hash_algorithm_name: str) -> str:
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
-            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{self.CSR_SIGN_HASH_ALG}').dotted_string
+            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{hash_algorithm_name}').dotted_string
         elif self.priv_key.key_type == pkcs11.KeyType.EC:
-            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'ECDSA_WITH_{self.CSR_SIGN_HASH_ALG}').dotted_string
+            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'ECDSA_WITH_{hash_algorithm_name}').dotted_string
         else:
             raise NotImplementedError
 
         return algorithm_oid
 
+    async def _sign_object(self, obj: Asn1Item, hash_algorithm_name: str) -> tuple[AlgorithmIdentifier, univ.BitString]:
+        signature_algorithm_dict = {
+            "algorithm": univ.ObjectIdentifier(self._signature_algorithm_oid(hash_algorithm_name))
+        }
+
+        signature_algorithm = dict_decoder(signature_algorithm_dict, asn1Spec=AlgorithmIdentifier())
+        signature_bytes = self.p11_client.sign_data(self.priv_key, der_encoder(obj), hash_algorithm_name)
+        bit_string = univ.BitString(''.join(f'{byte:08b}' for byte in signature_bytes))
+
+        return signature_algorithm, bit_string
+
     async def _create_csr(self) -> bytes:
+        attributes = Attributes().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
+
+        ext_req_attribute = SingleAttribute()
+        ext_req_attribute_val = AttributeValues()
+
+        csr_extensions = [
+            self.config.x509.basic_constraints,
+            self.config.x509.key_usage,
+            self.config.x509.extended_key_usage,
+            self.config.x509.subject_alternative_name,
+            self.config.x509.authority_info_access,
+            self.config.x509.crl_distribution_points
+        ]
+
+        for ext in csr_extensions:
+            if ext is not None:
+                ext_req_attribute_val.append(ext.to_asn1_ext())
+
+        ext_req_attribute["type"] = univ.ObjectIdentifier("1.2.840.113549.1.9.14")
+        ext_req_attribute['values'] = ext_req_attribute_val
+
+        attributes.append(ext_req_attribute)
+
         csr_info = CertificationRequestInfo()
-        csr_info.setComponentByName("version", self.CSR_VERSION)
-
-        csr_name = Name()
-        csr_name.setComponentByName("rdnSequence", self.config.x509.subject_name.to_rdn_seq())
-        csr_info.setComponentByName("subject", csr_name)
-
-        pub_key_info = der_decoder(self.pub_key.public_bytes(), asn1Spec=SubjectPublicKeyInfo())
-        csr_info.setComponentByName("subjectPKInfo", pub_key_info[0])
+        csr_info["version"] = self.CSR_VERSION
+        csr_info['subject'] = self.config.x509.subject_name.to_asn1()
+        csr_info['subjectPKInfo'] = der_decoder(self.pub_key.public_bytes(), asn1Spec=SubjectPublicKeyInfo())[0]
+        csr_info['attributes'] = attributes
 
         csr = CertificationRequest()
         csr.setComponentByName("certificationRequestInfo", csr_info)
 
-        signature_algorithm = AlgorithmIdentifier()
-        signature_algorithm.setComponentByName("algorithm", univ.ObjectIdentifier(self.signature_algorithm_oid))
+        signature_algorithm, signature = await self._sign_object(csr_info, self.CRT_SIGN_HASH_ALG)
         csr.setComponentByName("signatureAlgorithm", signature_algorithm)
-
-        signature_bytes = self.p11_client.sign_csr_info(self.priv_key, der_encoder(csr_info), self.CSR_SIGN_HASH_ALG)
-        bit_string = ''.join(f'{byte:08b}' for byte in signature_bytes)
-        csr.setComponentByName("signature", bit_string)
+        csr.setComponentByName("signature", signature)
 
         return der_encoder(csr)
+
+    def _get_ans1_time(self, dt: datetime) -> Time:
+        time = Time()
+
+        if dt.year > 2049:
+            time["generalTime"] = useful.GeneralizedTime.fromDateTime(dt)
+        else:
+            time["utcTime"] = useful.UTCTime.fromDateTime(dt)
+
+        return time
 
     async def _sign_csr(self, csr_der: bytes, days: int):
         csr: CertificationRequest = der_decoder(csr_der, asn1Spec=CertificationRequest())[0]
         csr_info = csr.getComponentByName("certificationRequestInfo")
 
         tbs_cert = TBSCertificate()
-        tbs_cert.setComponentByName("version", self.CERT_VERSION)
-
-        ### Serial ###
-        serial = random.getrandbits(159)
-        tbs_cert.setComponentByName("serialNumber", CertificateSerialNumber(serial))
 
         ### Signature ###
         signature_algorithm = AlgorithmIdentifier()
-        signature_algorithm.setComponentByName("algorithm", univ.ObjectIdentifier(self.signature_algorithm_oid))
-        tbs_cert.setComponentByName("signature", signature_algorithm)
-
-        ### Issuer ###
-        issuer_name = Name()
-        issuer_name.setComponentByName("rdnSequence", self.config.x509.subject_name.to_rdn_seq())
-        tbs_cert.setComponentByName("issuer", issuer_name)
+        signature_algorithm_oid = univ.ObjectIdentifier(self._signature_algorithm_oid(self.CSR_SIGN_HASH_ALG))
+        signature_algorithm["algorithm"] = signature_algorithm_oid
 
         ### Validity ###
         validity = Validity()
-        not_before = Time()
-        not_before_time = datetime.now() - timedelta(hours=1)
 
-        not_before_utc_time = useful.UTCTime.fromDateTime(not_before_time)
-        not_before_generalized_time = useful.GeneralizedTime.fromDateTime(not_before_time)
+        now = datetime.now(timezone.utc)
 
-        if not_before_time.year > 2049:
-            not_before.setComponentByName("generalTime", not_before_generalized_time)
-        else:
-            not_before.setComponentByName("utcTime", not_before_utc_time)
+        not_before_time = now - timedelta(hours=1)
+        not_after_time = now + timedelta(days=days)
 
-        not_after = Time()
-
-        not_after_time = datetime.now() + timedelta(days=days)
-        not_after_utc_time = useful.UTCTime.fromDateTime(not_after_time)
-        not_after_generalized_time = useful.GeneralizedTime.fromDateTime(not_after_time)
-
-        if not_after_time.year > 2049:
-            not_after.setComponentByName("generalTime", not_after_generalized_time)
-        else:
-            not_after.setComponentByName("utcTime", not_after_utc_time)
-
-        validity.setComponentByName("notBefore", not_before)
-        validity.setComponentByName("notAfter", not_after)
-        tbs_cert.setComponentByName("validity", validity)
-
-        ### Subject ###
-        tbs_cert.setComponentByName("subject", csr_info.getComponentByName("subject"))
-
-        ### Subject public key info ###
-        tbs_cert.setComponentByName("subjectPublicKeyInfo", csr_info.getComponentByName("subjectPKInfo"))
-
-        ### Issuer Unique ID ###
-        # id_bitstring = ''.join(f'{byte:08b}' for byte in self.priv_key.id)
-        # tbs_cert.setComponentByName("issuerUniqueID", UniqueIdentifier(id_bitstring))
+        validity["notBefore"] = self._get_ans1_time(not_before_time)
+        validity["notAfter"] = self._get_ans1_time(not_after_time)
 
         ### Extensions ###
-        extensions = Extensions()
+        extensions = Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 3))
 
         ### Subject Key Identifier ###
         skid_extension = Extension()
-        skid_extension.setComponentByName("extnID", x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string)
+        skid_extension["extnID"] = x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string
 
         subject_pub_key_bitstring = csr_info.getComponentByName("subjectPKInfo").getComponentByName("subjectPublicKey")
-        skid = hashlib.sha1(subject_pub_key_bitstring.asOctets()).digest()
-        skid_extension.setComponentByName("extnValue", univ.OctetString(skid))
-
-        extensions.append(skid_extension)
+        skid = hashlib.sha1(subject_pub_key_bitstring.asOctets()).hexdigest().upper()
+        skid_string = ":".join(skid[i:i+2] for i in range(0, len(skid), 2))
+        skid_extension["extnValue"] = univ.OctetString(skid_string)
 
         ### Authority Key Identifier ###
         akid_extension = Extension()
         akid_extension.setComponentByName("extnID", x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string)
 
         issuer_pub_key_bytes = self.pub_key.public_bytes()
-        akid = hashlib.sha1(issuer_pub_key_bytes).digest()
-        akid_extension.setComponentByName("extnValue", univ.OctetString(akid))
+        akid = hashlib.sha1(issuer_pub_key_bytes).hexdigest().upper()
+        akid_string = ":".join(akid[i:i+2] for i in range(0, len(akid), 2))
+        akid_extension["extnValue"] = univ.OctetString(akid_string)
+
+        ### Requested Extensions ###
+        csr_attributes: Attributes = csr_info.getComponentByName("attributes")
+        ext_req_attr = next(filter(lambda attr: attr['type'] == univ.ObjectIdentifier("1.2.840.113549.1.9.14"), csr_attributes), None)
+        if ext_req_attr:
+            requested_extensions = ext_req_attr['values']
+            for ext_oct in requested_extensions:
+                ext = der_decoder(ext_oct, asn1Spec=Extension())[0]
+                extensions.append(ext)
 
         extensions.append(akid_extension)
+        extensions.append(skid_extension)
+
+        tbs_cert["version"] = self.CERT_VERSION
+        tbs_cert["serialNumber"] = CertificateSerialNumber(random.getrandbits(159))
+        tbs_cert["signature"] = signature_algorithm
+        tbs_cert["issuer"] = self.config.x509.subject_name.to_asn1()
+        tbs_cert["validity"] = validity
+        tbs_cert["subject"] = csr_info.getComponentByName("subject")
+        tbs_cert["subjectPublicKeyInfo"] = csr_info.getComponentByName("subjectPKInfo")
+        tbs_cert["extensions"] = extensions
+
+        ### Certificate ###
+        signature_algorithm, signature = await self._sign_object(tbs_cert, self.CRT_SIGN_HASH_ALG)
+
+        crt = ANS1Certificate()
+        crt["tbsCertificate"] = tbs_cert
+        crt["signatureAlgorithm"] = signature_algorithm
+        crt["signature"] = signature
+
+        with open("/tmp/d", "wb+") as f:
+            f.write(der_encoder(crt))
+
 
     async def create(self) -> None:
         ca_logger.info(f"Creating certificate {self.config.name}")
@@ -178,6 +212,9 @@ class Certificate:
             return
 
         csr_der = await self._create_csr()
+
+        with open("/tmp/c", "wb+") as f:
+            f.write(csr_der)
 
         if self.config.signed_by is None:
             await self._sign_csr(csr_der, 900)
