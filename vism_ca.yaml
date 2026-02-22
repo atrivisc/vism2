@@ -10,7 +10,7 @@ vism_ca:
 
   s3:
     bucket: "vism"
-    endpoint: "localhost:9000"
+    endpoint: "http://localhost:9000"
     access_key: "minioadmin"
     secret_key: "minioadmin"
 
@@ -28,22 +28,19 @@ vism_ca:
     user_pin: "1234"
 
   x509_certificates:
-    - name: "testing123"
+    - name: "root_ca"
       key:
         algorithm: EC
         curve: secp256k1
       x509:
+        days: 9131
         subject_name:
-          common_name: "TEST"
-          country: "EE"
-          state_or_province: "TEST"
-          locality: "TEST"
-          organization: "TEST"
+          common_name: "Root CA"
         basic_constraints:
           ca: true
           path_length: 0
           critical: true
         key_usage:
-          digital_signature: true
-          key_encipherment: true
-          data_encipherment: true
+          critical: true
+          crl_sign: true
+          key_cert_sign: true

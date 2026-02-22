@@ -4,9 +4,9 @@ Database module for Vism CA.
 This module provides database models and operations for the Vism CA,
 including certificate entities and database management.
 """
-
+from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Text, Boolean, UUID, ForeignKey, Uuid, Integer
+from sqlalchemy import String, Text, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
 from lib.database import Base, VismDatabase
@@ -21,17 +21,25 @@ class IssuedCertificate(Base):
     __tablename__ = 'issued_certificate'
 
     status_flag: Mapped[str] = mapped_column(String)
-    expiration_date: Mapped[str] = mapped_column(String)
-    revocation_date: Mapped[str] = mapped_column(String)
-    serial_hex: Mapped[str] = mapped_column(String)
-    distinguished_name: Mapped[str] = mapped_column(String)
+    expiration_date: Mapped[bytes] = mapped_column(LargeBinary)
+    serial: Mapped[bytes] = mapped_column(LargeBinary)
+    subject: Mapped[bytes] = mapped_column(LargeBinary)
 
-    ca_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey('certificate.id'), init=False
-    )
-    ca: Mapped[CertificateEntity] = relationship(
-        "CertificateEntity", lazy="joined", default=None
-    )
+    ca_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey('certificate.id'), init=False)
+    ca: Mapped[CertificateEntity] = relationship("CertificateEntity", lazy="joined", default=None)
+
+    revocation_date: Mapped[bytes] = mapped_column(LargeBinary, nullable=True, default=None)
+
+    def to_dict(self):
+        """Convert entity to dictionary representation."""
+        return {
+            "status_flag": self.status_flag,
+            "expiration_date": self.expiration_date.hex(),
+            "serial": self.serial.hex(),
+            "subject": self.subject.hex(),
+            "ca_id": str(self.ca_id),
+            "revocation_date": self.revocation_date.hex() if self.revocation_date else None,
+        }
 
 class CertificateEntity(Base):
     """Database entity representing a certificate."""
@@ -42,26 +50,18 @@ class CertificateEntity(Base):
     externally_managed: Mapped[bool] = mapped_column(Boolean)
     crl_number: Mapped[int] = mapped_column(Integer, default=1)
 
-    crt_pem: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
-    crl_pem: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
+    crt_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
+    crl_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
 
     def to_dict(self):
         """Convert entity to dictionary representation."""
         return {
             "name": self.name,
             "externally_managed": self.externally_managed,
-            "crt_pem": self.crt_pem,
-            "crl_pem": self.crl_pem,
+            "crl_number": self.crl_number,
+            "crt_der": self.crt_der.hex() if self.crt_der else None,
+            "crl_der": self.crl_der.hex() if self.crl_der else None,
         }
-
-    def cert_data(self):
-        """Get certificate data for external use."""
-        return {
-            "name": self.name,
-            "crt_pem": self.crt_pem,
-            "crl_pem": self.crl_pem,
-        }
-
 
 class VismCADatabase(VismDatabase):
     """Database interface for Vism CA operations."""

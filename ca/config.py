@@ -16,10 +16,7 @@ from cryptography import x509
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
 from pyasn1.type import univ, char
-from pyasn1_modules.rfc2986 import RDNSequence, RelativeDistinguishedName, AttributeTypeAndValue
-from pyasn1_modules.rfc5280 import Extension, AuthorityInfoAccessSyntax, AccessDescription, GeneralName, KeyUsage, \
-    SubjectAltName, BasicConstraints, ExtKeyUsageSyntax, KeyPurposeId, Name, CRLDistributionPoints, DistributionPoint, \
-    DistributionPointName, GeneralNames, ReasonFlags
+from pyasn1_modules import rfc5280
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
@@ -46,7 +43,7 @@ class X509ConfigExtension(metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
     def to_asn1_ext(self):
-        extn = Extension()
+        extn = rfc5280.Extension()
         extn.setComponentByName("extnID", univ.ObjectIdentifier(self.OID))
 
         if self.critical:
@@ -117,17 +114,17 @@ class X509ConfigSubjectName:
     organization: str = None
 
     @staticmethod
-    def _add_rdn(rdn_seq: RDNSequence, attribute_type: ObjectIdentifier, value: str):
+    def _add_rdn(rdn_seq: rfc5280.RDNSequence, attribute_type: ObjectIdentifier, value: str):
         if value:
-            rdn = RelativeDistinguishedName()
-            attr = AttributeTypeAndValue()
+            rdn = rfc5280.RelativeDistinguishedName()
+            attr = rfc5280.AttributeTypeAndValue()
             attr.setComponentByName("type", univ.ObjectIdentifier(attribute_type.dotted_string))
             attr.setComponentByName("value", char.UTF8String(value))
             rdn.append(attr)
             rdn_seq.append(rdn)
 
     def to_rdn_seq(self):
-        rdn_seq = RDNSequence()
+        rdn_seq = rfc5280.RDNSequence()
 
         self._add_rdn(rdn_seq, x509.NameOID.COMMON_NAME, self.common_name)
         self._add_rdn(rdn_seq, x509.NameOID.COUNTRY_NAME, self.country)
@@ -138,7 +135,7 @@ class X509ConfigSubjectName:
         return rdn_seq
 
     def to_asn1(self):
-        name = Name()
+        name = rfc5280.Name()
         name.setComponentByName("rdnSequence", self.to_rdn_seq())
         return name
 
@@ -158,7 +155,7 @@ class X509ConfigKeyUsage(X509ConfigExtension):
     decipher_only: bool = False
 
     def to_asn1(self):
-        return KeyUsage(
+        return rfc5280.KeyUsage(
             f"{int(self.digital_signature)}"
             f"{int(self.non_repudiation)}"
             f"{int(self.key_encipherment)}"
@@ -177,10 +174,10 @@ class X509ConfigExtendedKeyUsage(X509ConfigExtension):
     usages: list[str] = field(default_factory=list)
 
     def to_asn1(self):
-        extended_key_usage = ExtKeyUsageSyntax()
+        extended_key_usage = rfc5280.ExtKeyUsageSyntax()
 
         for usage in self.usages:
-            extended_key_usage.append(KeyPurposeId(usage))
+            extended_key_usage.append(rfc5280.KeyPurposeId(usage))
 
         return extended_key_usage
 
@@ -192,7 +189,7 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
     path_length: int = 0
 
     def to_asn1(self):
-        basic_constraints = BasicConstraints()
+        basic_constraints = rfc5280.BasicConstraints()
         basic_constraints.setComponentByName("cA", self.ca)
         basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
 
@@ -209,19 +206,19 @@ class X509ConfigSubjectAlternativeName(X509ConfigExtension):
     emails: list[str] = None
 
     def to_asn1(self):
-        subject_alt_names = SubjectAltName()
+        subject_alt_names = rfc5280.SubjectAltName()
         for ip in self.ips:
-            name = GeneralName()
+            name = rfc5280.GeneralName()
             name.setComponentByName("iPAddress", univ.OctetString(ip))
             subject_alt_names.append(name)
 
         for dn in self.dns:
-            name = GeneralName()
+            name = rfc5280.GeneralName()
             name.setComponentByName("dNSName", char.IA5String(dn))
             subject_alt_names.append(name)
 
         for email in self.emails:
-            name = GeneralName()
+            name = rfc5280.GeneralName()
             name.setComponentByName("rfc822Name", char.IA5String(email))
             subject_alt_names.append(name)
 
@@ -242,11 +239,11 @@ class X509ConfigAccessDescription:
     access_location_type: X509ConfigLocationType = X509ConfigLocationType.URL
 
     def to_ans1(self):
-        access_description = AccessDescription()
+        access_description = rfc5280.AccessDescription()
         access_method = univ.ObjectIdentifier(
             x509.OID_OCSP if self.access_method == X509ConfigAccessDescriptionMethod.OCSP else x509.OID_CA_ISSUERS
         )
-        access_location = GeneralName()
+        access_location = rfc5280.GeneralName()
         if self.access_location_type == X509ConfigLocationType.URL:
             access_location.setComponentByName("uniformResourceIdentifier", self.access_location)
         else:
@@ -265,7 +262,7 @@ class X509ConfigAuthorityInfoAccess(X509ConfigExtension):
     descriptions: list[X509ConfigAccessDescription] = field(default_factory=list)
 
     def to_asn1(self):
-        authority_info_access = AuthorityInfoAccessSyntax()
+        authority_info_access = rfc5280.AuthorityInfoAccessSyntax()
 
         for description in self.descriptions:
             authority_info_access.append(description.to_ans1())
@@ -297,20 +294,20 @@ class X509ConfigDistributionPoint:
         else:
             raise NotImplementedError(f"Location type {self.names_type} is not implemented.")
 
-        dp = DistributionPoint()
+        dp = rfc5280.DistributionPoint()
 
-        dp_name = DistributionPointName()
-        names = GeneralNames()
+        dp_name = rfc5280.DistributionPointName()
+        names = rfc5280.GeneralNames()
 
         for name in self.names:
-            name = GeneralName()
-            name.setComponentByName(name_component, char.IA5String(name))
+            general_name = rfc5280.GeneralName()
+            general_name.setComponentByName(name_component, char.IA5String(name))
             names.append(name)
 
         dp_name.setComponentByName("fullName", names)
         dp.setComponentByName("distributionPoint", dp_name)
 
-        reasons = ReasonFlags(
+        reasons = rfc5280.ReasonFlags(
             "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
         )
         dp.setComponentByName("reasons", reasons)
@@ -326,7 +323,7 @@ class X509ConfigCRLDistributionPoints(X509ConfigExtension):
     points: list[X509ConfigDistributionPoint] = field(default_factory=list)
 
     def to_asn1(self):
-        crl_distribution_points = CRLDistributionPoints()
+        crl_distribution_points = rfc5280.CRLDistributionPoints()
 
         for point in self.points:
             crl_distribution_points.append(point.to_asn1())
@@ -337,6 +334,9 @@ class X509ConfigCRLDistributionPoints(X509ConfigExtension):
 @dataclass
 class X509Config:
     """X509 configuration."""
+    days: int
+    crl_days: int
+
     subject_name: X509ConfigSubjectName
     basic_constraints: X509ConfigBasicConstraints
     key_usage: X509ConfigKeyUsage = None

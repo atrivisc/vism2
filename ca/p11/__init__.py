@@ -49,7 +49,6 @@ class PKCS11Client:
 
     @staticmethod
     def _generate_ec_keypair(session: Session, priv_key: PKCS11PrivKey, pub_key: PKCS11PubKey) -> tuple[pkcs11.PublicKey, pkcs11.PrivateKey]:
-        print(priv_key.template)
         shared_logger.debug(f"Generating EC keypair {priv_key.label}")
 
         domain = session.create_domain_parameters(priv_key.key_type, {Attribute.EC_PARAMS: priv_key.ec_params}, local=True)
