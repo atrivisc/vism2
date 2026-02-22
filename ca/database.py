@@ -4,12 +4,15 @@ Database module for Vism CA.
 This module provides database models and operations for the Vism CA,
 including certificate entities and database management.
 """
-from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Text, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary
+from pyasn1.codec.der.encoder import encode as der_encoder
+
+from pyasn1_modules import rfc5280
+from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary, Text
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
 from lib.database import Base, VismDatabase
+from lib.errors import VismException, VismBreakingException
 
 
 class ModuleData:
@@ -29,6 +32,7 @@ class IssuedCertificate(Base):
     ca: Mapped[CertificateEntity] = relationship("CertificateEntity", lazy="joined", default=None)
 
     revocation_date: Mapped[bytes] = mapped_column(LargeBinary, nullable=True, default=None)
+    revocation_reason: Mapped[str] = mapped_column(Text, nullable=True, default=None)
 
     def to_dict(self):
         """Convert entity to dictionary representation."""
@@ -65,6 +69,25 @@ class CertificateEntity(Base):
 
 class VismCADatabase(VismDatabase):
     """Database interface for Vism CA operations."""
+
+    def get_issued_certificate_by_serial(self, serial: int | str) -> Optional[IssuedCertificate]:
+        # when str, assume it's a hex
+        if isinstance(serial, str):
+            try:
+                serial = int(serial, 16)
+            except ValueError:
+                raise VismBreakingException(f"Invalid serial number: {serial}")
+
+        serial_ans1 = rfc5280.CertificateSerialNumber(serial)
+        print(der_encoder(serial_ans1))
+
+        with self._get_session() as session:
+            return session.query(IssuedCertificate).filter(IssuedCertificate.serial == der_encoder(serial_ans1)).first()
+
+
+    def get_issued_certificate(self, issuer_id: UUID) -> list[IssuedCertificate]:
+        with self._get_session() as session:
+            return session.query(IssuedCertificate).filter(IssuedCertificate.ca_id == issuer_id).all()
 
     def get_cert_by_name(self, name: str) -> Optional[CertificateEntity]:
         """

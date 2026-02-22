@@ -34,6 +34,7 @@ vism_ca:
         curve: secp256k1
       x509:
         days: 9131
+        crl_days: 7
         subject_name:
           common_name: "Root CA"
         basic_constraints:

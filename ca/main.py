@@ -1,13 +1,20 @@
 """Main Vism CA class and entrypoint."""
 
 import asyncio
+from datetime import timezone, datetime
+
+from cryptography import x509
+from pyasn1.type import useful
 
 from ca import Certificate
-from ca.config import CAConfig, ca_logger
+from ca.asn1 import get_ans1_time
+from ca.config import CAConfig, ca_logger, ValidRevocationReasons
 from ca.database import VismCADatabase
 from ca.p11 import PKCS11Client
 from lib.controller import Controller
+from lib.errors import VismBreakingException
 from lib.s3 import AsyncS3Client
+from pyasn1.codec.der.encoder import encode as der_encoder
 
 
 class VismCA(Controller):
@@ -26,15 +33,14 @@ class VismCA(Controller):
 
     databaseClass = VismCADatabase
     configClass = CAConfig
+    database: VismCADatabase
+    config: CAConfig
 
     def __init__(self):
         super().__init__()
         self.certificates: dict[str, Certificate] = {}
         self.p11_client = PKCS11Client(self.config.pkcs11)
         self.s3_client = AsyncS3Client(self.config.s3)
-
-        self.database: VismCADatabase
-        self.config: CAConfig
 
     # async def update_crl(self):
     #     """Updates CRLs for all certificates managed by the CA."""
@@ -48,6 +54,22 @@ class VismCA(Controller):
     #
     async def update_crl(self):
         pass
+
+    async def revoke_certificates(self, serial: int | str, reason: ValidRevocationReasons):
+        ca_logger.info(f"Revoking certificate with the serial: {serial} with reason: {reason}")
+        issued_certificate = self.database.get_issued_certificate_by_serial(serial)
+        if issued_certificate is None:
+            raise VismBreakingException(f"There is no issued certificate with the serial: {serial}")
+
+        if issued_certificate.status_flag == "r":
+            raise VismBreakingException(f"Certificate {serial} was already revoked")
+
+        issued_certificate.status_flag = "r"
+        issued_certificate.revocation_reason = reason.value
+        issued_certificate.revocation_date = der_encoder(get_ans1_time(datetime.now(timezone.utc)))
+
+        self.database.save_to_db(issued_certificate)
+        ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
@@ -72,7 +94,7 @@ class VismCA(Controller):
             cert = Certificate(self, cert_config, None)
             await cert.load()
 
-def main(function: str = None):
+def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""
     ca = VismCA()
     try:
@@ -80,6 +102,8 @@ def main(function: str = None):
             asyncio.run(ca.run())
         if function == "update_crl":
             asyncio.run(ca.update_crl())
+        if function == "revoke":
+            asyncio.run(ca.revoke_certificates(serial, revoke_reason))
     except KeyboardInterrupt:
         ca.shutdown()
 

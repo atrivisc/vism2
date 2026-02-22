@@ -6,6 +6,8 @@ import logging
 from typing import Any, Optional
 import uvicorn
 
+from ca.config import ValidRevocationReasons
+
 logger = logging.getLogger("cli")
 
 def main() -> Optional[Any]:
@@ -26,6 +28,10 @@ def main() -> Optional[Any]:
     ca_subparser.add_parser('start', help='Run the CA api')
     ca_subparser.add_parser('update_crl', help='Update Certificate Revocation Lists')
 
+    revoke_parser = ca_subparser.add_parser('revoke', help='Revoke a certificate')
+    revoke_parser.add_argument('serial', help='Certificate serial number to revoke as hex')
+    revoke_parser.add_argument('reason', help='Revocation reason', type=ValidRevocationReasons, choices=list(ValidRevocationReasons))
+
     ### Acme ###
     acme_parser = component_subparsers.add_parser('acme', help='ACME')
     acme_subparser = acme_parser.add_subparsers(dest='acme_command', required=True, help='acme command')
@@ -37,10 +43,12 @@ def main() -> Optional[Any]:
         if args.acme_command == 'start':
             uvicorn.run("acme:app", host="0.0.0.0", port=8080, reload=True)
     if args.component == 'ca':
+        import ca
         if args.ca_command == 'start':
-            import ca
             ca.main()
+        elif args.ca_command == 'revoke':
+            ca.main("revoke", args.serial, args.reason)
 
 
 if __name__ == '__main__':
-    print(main())
+    main()

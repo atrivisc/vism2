@@ -10,15 +10,29 @@ from cryptography.x509 import SignatureAlgorithmOID
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.native.decoder import decode as dict_decoder
-from pyasn1.type import univ, useful, tag
+from pyasn1.type import univ, tag
 from pyasn1.type.base import Asn1Item
 from pyasn1_modules import rfc2985, rfc2986, rfc5280, rfc2315
+from pyasn1_modules.rfc5280 import CertificateList
 
+from ca.asn1 import RevokedCertificates, RevokedCertificateEntry, get_ans1_time
 from ca.config import CertificateConfig, ca_logger
 from ca.database import IssuedCertificate, CertificateEntity, VismCADatabase
 from ca.p11 import PKCS11PrivKey, PKCS11PubKey, PKCS11Client
 from lib.errors import VismBreakingException
 
+_revocation_reason_map = {
+    "unspecified": rfc5280.CRLReason("unspecified"),
+    "keyCompromise": rfc5280.CRLReason("keyCompromise"),
+    "cACompromise": rfc5280.CRLReason("cACompromise"),
+    "affiliationChanged": rfc5280.CRLReason("affiliationChanged"),
+    "superseded": rfc5280.CRLReason("superseded"),
+    "cessationOfOperation": rfc5280.CRLReason("cessationOfOperation"),
+    "certificateHold": rfc5280.CRLReason("certificateHold"),
+    "removeFromCRL": rfc5280.CRLReason("removeFromCRL"),
+    "privilegeWithdrawn": rfc5280.CRLReason("privilegeWithdrawn"),
+    "aACompromise": rfc5280.CRLReason("aACompromise"),
+}
 
 class Certificate:
     """
@@ -27,7 +41,7 @@ class Certificate:
     """
     CSR_VERSION = 0x0
     CERT_VERSION = 0x2
-    CRL_VERSION = 0x0
+    CRL_VERSION = 0x1
     CSR_SIGN_HASH_ALG = "SHA256"
     CRT_SIGN_HASH_ALG = "SHA256"
     CRL_SIGN_HASH_ALG = "SHA256"
@@ -120,17 +134,6 @@ class Certificate:
 
         return der_encoder(csr)
 
-    @staticmethod
-    def _get_ans1_time(dt: datetime) -> rfc5280.Time:
-        time = rfc5280.Time()
-
-        if dt.year > 2049:
-            time["generalTime"] = useful.GeneralizedTime.fromDateTime(dt)
-        else:
-            time["utcTime"] = useful.UTCTime.fromDateTime(dt)
-
-        return time
-
     async def _sign_csr(self, csr_der: bytes, days: int) -> bytes:
         csr: rfc2986.CertificationRequest = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())[0]
         csr_info = csr.getComponentByName("certificationRequestInfo")
@@ -150,8 +153,8 @@ class Certificate:
         not_before_time = now - timedelta(hours=1)
         not_after_time = now + timedelta(days=days)
 
-        validity["notBefore"] = self._get_ans1_time(not_before_time)
-        validity["notAfter"] = self._get_ans1_time(not_after_time)
+        validity["notBefore"] = get_ans1_time(not_before_time)
+        validity["notAfter"] = get_ans1_time(not_after_time)
 
         ### Extensions ###
         extensions = rfc5280.Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 3))
@@ -214,19 +217,63 @@ class Certificate:
 
         return der_encoder(crt)
 
-    def _build_crl(self):
-        crl = rfc2315.TBSCertificateRevocationList()
+    async def _build_crl(self):
+        tbs_crl = rfc5280.TBSCertList()
 
         signature_algorithm = rfc5280.AlgorithmIdentifier()
         signature_algorithm["algorithm"] = univ.ObjectIdentifier(self._signature_algorithm_oid(self.CRL_SIGN_HASH_ALG))
 
-        revoked_certificates = univ.SequenceOf(componentType=rfc2315.CRLEntry())
+        revoked_certificates = RevokedCertificates()
+        issued_certificates = self.database.get_issued_certificate(self.db_entry.id)
 
-        crl["signature"] = signature_algorithm
-        crl["issuer"] = self.config.x509.subject_name.to_asn1()
-        crl["lastUpdate"] = useful.UTCTime.fromDateTime(datetime.now() - timedelta(hours=1))
-        crl["nextUpdate"] = useful.UTCTime.fromDateTime(datetime.now() + timedelta(days=self.config.x509.crl_days))
+        for cert in issued_certificates:
+            cert_expiry_time_ans1: rfc5280.Time = der_decoder(cert.expiration_date, asn1Spec=rfc5280.Time())[0]
+            cert_expiry_time = cert_expiry_time_ans1['generalTime'] or cert_expiry_time_ans1['UTCTime']
 
+            if cert_expiry_time.asDateTime <= datetime.now(timezone.utc):
+                cert.status_flag = "e"
+                self.database.save_to_db(cert)
+
+            if cert.status_flag == "v":
+                continue
+
+            if cert.status_flag in ["r", "e"]:
+                crl_entry = RevokedCertificateEntry()
+                crl_entry['userCertificate'] = der_decoder(cert.serial, asn1Spec=rfc2315.SerialNumber())[0]
+
+                if cert.status_flag == "e":
+                    crl_entry['revocationDate'] = cert_expiry_time_ans1
+                elif cert.status_flag == "r":
+                    cert_revocation_time = der_decoder(cert.revocation_date, asn1Spec=rfc5280.Time())[0]
+
+                    revocation_reason = _revocation_reason_map.get(cert.revocation_reason, _revocation_reason_map["unspecified"])
+                    crl_extensions = rfc5280.Extensions()
+
+                    revocation_reason_ext = rfc5280.Extension()
+                    revocation_reason_ext['extnID'] = x509.OID_CRL_REASON.dotted_string
+                    revocation_reason_ext['extnValue'] = univ.OctetString(der_encoder(revocation_reason))
+                    crl_extensions.append(revocation_reason_ext)
+
+                    crl_entry['revocationDate'] = cert_revocation_time
+                    crl_entry['crlEntryExtensions'] = crl_extensions
+
+                revoked_certificates.append(crl_entry)
+
+        tbs_crl['version'] = self.CRL_VERSION
+        tbs_crl["signature"] = signature_algorithm
+        tbs_crl["issuer"] = self.config.x509.subject_name.to_asn1()
+        tbs_crl["thisUpdate"] = get_ans1_time(datetime.now(timezone.utc) - timedelta(hours=1))
+        tbs_crl["nextUpdate"] = get_ans1_time(datetime.now(timezone.utc) + timedelta(days=self.config.x509.crl_days))
+        tbs_crl["revokedCertificates"] = revoked_certificates
+
+        signature_algorithm, signature = await self._sign_object(tbs_crl, self.CRL_SIGN_HASH_ALG)
+
+        crl = CertificateList()
+        crl['tbsCertList'] = tbs_crl
+        crl['signatureAlgorithm'] = signature_algorithm
+        crl['signature'] = signature
+
+        return der_encoder(crl)
 
     async def create(self) -> None:
         ca_logger.info(f"Creating certificate {self.config.name}")
@@ -250,6 +297,11 @@ class Certificate:
                 self.db_entry.crt_der = crt_der
                 await self.save_to_db()
 
+            if self.db_entry.crl_der is None:
+                crl_der = await self._build_crl()
+                with open("/tmp/g",  "wb+") as f:
+                    f.write(crl_der)
+
     async def save_to_db(self):
         if not await self.controller.s3_client.exists(f"crt/{self.config.name}.crt"):
             await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
@@ -263,6 +315,6 @@ class Certificate:
     async def load(self):
         ca_logger.info(f"Loading certificate {self.config.name}")
 
-        if self.db_entry is None or self.db_entry.crt_der is None:
+        if self.db_entry is None or self.db_entry.crt_der is None or self.db_entry.crl_der is None:
             await self.create()
 

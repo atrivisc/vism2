@@ -26,6 +26,18 @@ from pyasn1.codec.der.encoder import encode as der_encoder
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
 
+class ValidRevocationReasons(enum.Enum):
+    unspecified = "unspecified"
+    keyCompromise = "keyCompromise"
+    cACompromise = "cACompromise"
+    affiliationChanged = "affiliationChanged"
+    superseded = "superseded"
+    cessationOfOperation = "cessationOfOperation"
+    certificateHold = "certificateHold"
+    removeFromCRL = "removeFromCRL"
+    privilegeWithdrawn = "privilegeWithdrawn"
+    aACompromise = "aACompromise"
+
 class SupportedKeyAlgorithms(enum.Enum):
     """Supported key algorithms."""
     rsa = "RSA"
