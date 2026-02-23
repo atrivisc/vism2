@@ -3,26 +3,19 @@ from operator import getitem
 from typing import TypeVar
 
 import pkcs11
-from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive, mechanisms
+from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive, mechanisms, Slot, Mechanism, MGF
 from ca.config import PKCS11Config
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
 from lib.config import shared_logger
 
 ObjectT = TypeVar('ObjectT', bound=pkcs11.Object)
 
-def get_mechanism_for_hash_algorithm(key_type: pkcs11.KeyType, hash_alg: str):
-    if key_type == pkcs11.KeyType.RSA:
-        return mechanisms.Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
-    elif key_type == pkcs11.KeyType.EC:
-        return mechanisms.Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}")
-    else:
-        return None
-
 class PKCS11Client:
     def __init__(self, config: PKCS11Config):
         self.config = config
         self.p11 = pkcs11.lib(config.lib_path)
         self.token: Token = self.p11.get_token(token_label=config.token_label)
+        self.supported_mechanisms = self.token.slot.get_mechanisms()
 
     def _get_raw_object(self, session: Session, obj_class: pkcs11.ObjectClass, label: str) -> ObjectT:
         shared_logger.debug(f"Getting object {obj_class.name} {label}")
@@ -74,14 +67,32 @@ class PKCS11Client:
                 pass
         return real_attrs
 
+    def get_mechanism(self, key_type: pkcs11.KeyType, hash_alg: str) -> tuple[pkcs11.Mechanism | None, tuple | None]:
+        mechanism_parameters = None
+        if key_type == pkcs11.KeyType.RSA:
+            rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS_PSS")
+            if rsa_mech not in self.supported_mechanisms:
+                rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
+            else:
+                hash_mech = Mechanism.__getitem__(hash_alg.upper())
+                mgf = MGF.__getitem__(hash_alg.upper())
+                salt_len = hashlib.new(hash_alg.upper()).digest_size
+                mechanism_parameters = (hash_mech,mgf,salt_len)
+
+            return rsa_mech, mechanism_parameters
+        elif key_type == pkcs11.KeyType.EC:
+            return Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}"), mechanism_parameters
+        else:
+            return None, None
+
     def sign_data(self, privkey: PKCS11PrivKey, data: bytes, hash_alg_name: str) -> bytes:
         with self.token.open(rw=True, user_pin=self.config.user_pin) as session:
             privkey_obj = self._get_raw_object(session, pkcs11.ObjectClass.PRIVATE_KEY, privkey.label)
             if privkey_obj is None:
                 raise ValueError(f"No private key found with label: {privkey.label}")
 
-            mechanism = get_mechanism_for_hash_algorithm(privkey.key_type, hash_alg_name)
-            signature = privkey_obj.sign(data, mechanism=mechanism)
+            mechanism, mechanism_params = self.get_mechanism(privkey.key_type, hash_alg_name)
+            signature = privkey_obj.sign(data, mechanism=mechanism, mechanism_param=mechanism_params)
 
             return signature
 
