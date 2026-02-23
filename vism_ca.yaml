@@ -30,13 +30,31 @@ vism_ca:
   x509_certificates:
     - name: "root_ca"
       key:
-        algorithm: EC
-        curve: secp256k1
+        algorithm: RSA
+        bits: 4096
       x509:
-        days: 9131
+        days: 30
         crl_days: 7
         subject_name:
           common_name: "Root CA"
+        basic_constraints:
+          ca: true
+          path_length: 1
+          critical: true
+        key_usage:
+          critical: true
+          crl_sign: true
+          key_cert_sign: true
+    - name: "int_ca"
+      signed_by: "root_ca"
+      key:
+        algorithm: RSA
+        bits: 4096
+      x509:
+        days: 10
+        crl_days: 7
+        subject_name:
+          common_name: "Inter CA"
         basic_constraints:
           ca: true
           path_length: 0

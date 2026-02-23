@@ -6,11 +6,14 @@ from typing import Self
 
 import pkcs11
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509 import SignatureAlgorithmOID
+from pyasn1 import error
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.native.decoder import decode as dict_decoder
-from pyasn1.type import univ, tag
+from pyasn1.type import univ, tag, useful
 from pyasn1.type.base import Asn1Item
 from pyasn1_modules import rfc2985, rfc2986, rfc5280, rfc2315
 from pyasn1_modules.rfc5280 import CertificateList
@@ -42,9 +45,9 @@ class Certificate:
     CSR_VERSION = 0x0
     CERT_VERSION = 0x2
     CRL_VERSION = 0x1
-    CSR_SIGN_HASH_ALG = "SHA256"
-    CRT_SIGN_HASH_ALG = "SHA256"
-    CRL_SIGN_HASH_ALG = "SHA256"
+    CSR_SIGN_HASH_ALG = "SHA384"
+    CRT_SIGN_HASH_ALG = "SHA384"
+    CRL_SIGN_HASH_ALG = "SHA384"
 
     def __init__(self, controller, config: CertificateConfig, issuer: Self | None):
         self.controller = controller
@@ -85,13 +88,20 @@ class Certificate:
         return algorithm_oid
 
     async def _sign_object(self, obj: Asn1Item, hash_algorithm_name: str) -> tuple[rfc5280.AlgorithmIdentifier, univ.BitString]:
+        ca_logger.info(f"Certificate {self.config.name} is signing obj {obj}")
         signature_algorithm_dict = {
             "algorithm": univ.ObjectIdentifier(self._signature_algorithm_oid(hash_algorithm_name))
         }
 
         signature_algorithm = dict_decoder(signature_algorithm_dict, asn1Spec=rfc5280.AlgorithmIdentifier())
         signature_bytes = self.controller.p11_client.sign_data(self.priv_key, der_encoder(obj), hash_algorithm_name)
-        bit_string = univ.BitString(''.join(f'{byte:08b}' for byte in signature_bytes))
+        if self.priv_key.key_type == pkcs11.KeyType.EC:
+            sig_len = len(signature_bytes)
+            int1 = signature_bytes[:(sig_len // 2)]
+            int2 = signature_bytes[(sig_len // 2):]
+            signature_bytes = encode_dss_signature(int.from_bytes(int1), int.from_bytes(int2))
+
+        bit_string = univ.BitString.fromHexString(signature_bytes.hex())
 
         return signature_algorithm, bit_string
 
@@ -161,21 +171,23 @@ class Certificate:
 
         ### Subject Key Identifier ###
         skid_extension = rfc5280.Extension()
-        skid_extension["extnID"] = x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string
 
-        subject_pub_key_bitstring = csr_info.getComponentByName("subjectPKInfo").getComponentByName("subjectPublicKey")
-        skid = hashlib.sha1(subject_pub_key_bitstring.asOctets()).hexdigest().upper()
-        skid_string = ":".join(skid[i:i+2] for i in range(0, len(skid), 2))
-        skid_extension["extnValue"] = univ.OctetString(skid_string)
+        skid_key_hash = hashlib.sha1(der_encoder(csr_info.getComponentByName("subjectPKInfo"))).digest()
+        skid_extension["extnID"] = x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string
+        skid_extension["extnValue"] = der_encoder(rfc5280.SubjectKeyIdentifier(skid_key_hash))
+        extensions.append(skid_extension)
 
         ### Authority Key Identifier ###
         akid_extension = rfc5280.Extension()
-        akid_extension.setComponentByName("extnID", x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string)
+        akid_key_hash = hashlib.sha1(self.pub_key.public_bytes()).digest()
 
-        issuer_pub_key_bytes = self.pub_key.public_bytes()
-        akid = hashlib.sha1(issuer_pub_key_bytes).hexdigest().upper()
-        akid_string = ":".join(akid[i:i+2] for i in range(0, len(akid), 2))
-        akid_extension["extnValue"] = univ.OctetString(akid_string)
+        if skid_key_hash != akid_key_hash:
+            akid = rfc5280.AuthorityKeyIdentifier()
+            akid['keyIdentifier'] = akid_key_hash
+
+            akid_extension["extnID"] = x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string
+            akid_extension["extnValue"] = der_encoder(akid)
+            extensions.append(akid_extension)
 
         ### Requested Extensions ###
         csr_attributes: rfc2986.Attributes = csr_info.getComponentByName("attributes")
@@ -185,9 +197,6 @@ class Certificate:
             for ext_oct in requested_extensions:
                 ext = der_decoder(ext_oct, asn1Spec=rfc5280.Extension())[0]
                 extensions.append(ext)
-
-        extensions.append(akid_extension)
-        extensions.append(skid_extension)
 
         tbs_cert["version"] = self.CERT_VERSION
         tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(random.getrandbits(159))
@@ -227,8 +236,20 @@ class Certificate:
         issued_certificates = self.database.get_issued_certificate(self.db_entry.id)
 
         for cert in issued_certificates:
-            cert_expiry_time_ans1: rfc5280.Time = der_decoder(cert.expiration_date, asn1Spec=rfc5280.Time())[0]
-            cert_expiry_time = cert_expiry_time_ans1['generalTime'] or cert_expiry_time_ans1['UTCTime']
+            cert_expiry_time = None
+            try:
+                cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.UTCTime())[0]
+            except error.PyAsn1Error:
+                pass
+
+            try:
+                cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.UTCTime())[0]
+            except error.PyAsn1Error:
+                pass
+
+            if cert_expiry_time is None:
+                raise VismBreakingException(f"Certificate has invalid expiration date: {cert.expiration_date}")
+
 
             if cert_expiry_time.asDateTime <= datetime.now(timezone.utc):
                 cert.status_flag = "e"
@@ -242,7 +263,7 @@ class Certificate:
                 crl_entry['userCertificate'] = der_decoder(cert.serial, asn1Spec=rfc2315.SerialNumber())[0]
 
                 if cert.status_flag == "e":
-                    crl_entry['revocationDate'] = cert_expiry_time_ans1
+                    crl_entry['revocationDate'] = cert_expiry_time
                 elif cert.status_flag == "r":
                     cert_revocation_time = der_decoder(cert.revocation_date, asn1Spec=rfc5280.Time())[0]
 
@@ -275,19 +296,23 @@ class Certificate:
 
         return der_encoder(crl)
 
-    async def create(self) -> None:
+    async def create(self) -> CertificateEntity:
         ca_logger.info(f"Creating certificate {self.config.name}")
 
-        self.pub_key, self.priv_key = self.p11_client.generate_keypair(self.pub_key, self.priv_key)
-
-        if self.config.externally_managed:
+        if self.config.externally_managed or (self.issuer and self.issuer.config.externally_managed):
             if self.config.certificate_pem is None or self.config.crl_pem is None:
-                raise VismBreakingException(f"Certificate {self.config.name} is externally managed, but no certificate or CRL was provided in the config.")
+                raise VismBreakingException(
+                    f"Certificate {self.config.name} is externally managed or "
+                    f"signed by an externally managed certificate, but no certificate or CRL was provided in the config."
+                )
 
-            # TODO
-            # self.db_entry.crt_der = self.config.certificate_pem
-            # self.db_entry.crl_pem = self.config.crl_pem
-            return
+            crt_der = x509.load_pem_x509_certificate(self.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+            crl_der = x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+
+            self.db_entry.crt_der = crt_der
+            self.db_entry.crl_der = crl_der
+
+            return await self.save_to_db()
 
         if self.config.signed_by is None:
             if self.db_entry.crt_der is None:
@@ -295,26 +320,49 @@ class Certificate:
                 crt_der = await self._sign_csr(csr_der, self.config.x509.days)
 
                 self.db_entry.crt_der = crt_der
-                await self.save_to_db()
+            #
+            # if self.db_entry.crl_der is None:
+            #     crl_der = await self._build_crl()
+            #     self.db_entry.crl_der = crl_der
 
-            if self.db_entry.crl_der is None:
-                crl_der = await self._build_crl()
-                with open("/tmp/g",  "wb+") as f:
-                    f.write(crl_der)
+            return await self.save_to_db()
+
+        if self.issuer:
+            if self.db_entry.crt_der is None:
+                csr_der = await self._create_csr()
+                crt_der = await self.issuer._sign_csr(csr_der, self.config.x509.days)
+                self.db_entry.crt_der = crt_der
+
+            # if self.db_entry.crl_der is None:
+            #     crl_der = await self._build_crl()
+            #     self.db_entry.crl_der = crl_der
+
+            return await self.save_to_db()
+
+        raise VismBreakingException("I dont know how you got here")
 
     async def save_to_db(self):
-        if not await self.controller.s3_client.exists(f"crt/{self.config.name}.crt"):
-            await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
+        await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
+        await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crl/{self.config.name}.crl")
 
-        if not await self.controller.s3_client.exists(f"crl/{self.config.name}.crl"):
-            await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crl/{self.config.name}.crl")
+        with open(f"/home/user01/Downloads/{self.config.name}.crt", "wb+") as f:
+            f.write(self.db_entry.crt_der)
+
+        with open(f"/home/user01/Downloads/{self.config.name}.pub", "wb+") as f:
+            f.write(self.pub_key.public_bytes())
 
         self._db_entry = self.database.save_to_db(self.db_entry)
+        return self.db_entry
 
 
-    async def load(self):
+    async def load(self) -> CertificateEntity:
         ca_logger.info(f"Loading certificate {self.config.name}")
 
-        if self.db_entry is None or self.db_entry.crt_der is None or self.db_entry.crl_der is None:
-            await self.create()
+        # This also loads all the important attributes when the key already exists
+        self.pub_key, self.priv_key = self.p11_client.generate_keypair(self.pub_key, self.priv_key)
+
+        if self.db_entry is None or self.db_entry.crt_der is None:
+            return await self.create()
+
+        return self.db_entry
 

@@ -91,8 +91,15 @@ class VismCA(Controller):
         """Creates and manages certificates for the CA."""
         ca_logger.info("Initializing certificates")
         for cert_config in self.config.x509_certificates:
-            cert = Certificate(self, cert_config, None)
+            issuer = None
+            if cert_config.signed_by is not None:
+                issuer = self.certificates[cert_config.signed_by]
+
+            cert = Certificate(self, cert_config, issuer)
             await cert.load()
+
+            self.certificates[cert.config.name] = cert
+
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""

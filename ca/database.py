@@ -79,7 +79,6 @@ class VismCADatabase(VismDatabase):
                 raise VismBreakingException(f"Invalid serial number: {serial}")
 
         serial_ans1 = rfc5280.CertificateSerialNumber(serial)
-        print(der_encoder(serial_ans1))
 
         with self._get_session() as session:
             return session.query(IssuedCertificate).filter(IssuedCertificate.serial == der_encoder(serial_ans1)).first()

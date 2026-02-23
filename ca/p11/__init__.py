@@ -3,13 +3,20 @@ from operator import getitem
 from typing import TypeVar
 
 import pkcs11
-from hashlib import __get_builtin_constructor
-from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive
+from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive, mechanisms
 from ca.config import PKCS11Config
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
 from lib.config import shared_logger
 
 ObjectT = TypeVar('ObjectT', bound=pkcs11.Object)
+
+def get_mechanism_for_hash_algorithm(key_type: pkcs11.KeyType, hash_alg: str):
+    if key_type == pkcs11.KeyType.RSA:
+        return mechanisms.Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
+    elif key_type == pkcs11.KeyType.EC:
+        return mechanisms.Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}")
+    else:
+        return None
 
 class PKCS11Client:
     def __init__(self, config: PKCS11Config):
@@ -67,14 +74,14 @@ class PKCS11Client:
                 pass
         return real_attrs
 
-    def sign_data(self, privkey: PKCS11PrivKey, data: bytes, hash_alg_name: str):
+    def sign_data(self, privkey: PKCS11PrivKey, data: bytes, hash_alg_name: str) -> bytes:
         with self.token.open(rw=True, user_pin=self.config.user_pin) as session:
             privkey_obj = self._get_raw_object(session, pkcs11.ObjectClass.PRIVATE_KEY, privkey.label)
             if privkey_obj is None:
                 raise ValueError(f"No private key found with label: {privkey.label}")
 
-            hash_bytes = hashlib.new(hash_alg_name, data).digest()
-            signature = privkey_obj.sign(hash_bytes)
+            mechanism = get_mechanism_for_hash_algorithm(privkey.key_type, hash_alg_name)
+            signature = privkey_obj.sign(data, mechanism=mechanism)
 
             return signature
 
