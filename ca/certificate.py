@@ -15,10 +15,10 @@ from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.native.decoder import decode as dict_decoder
 from pyasn1.type import univ, tag, useful
 from pyasn1.type.base import Asn1Item
-from pyasn1_modules import rfc2985, rfc2986, rfc5280, rfc2315
+from pyasn1_modules import rfc2985, rfc2986, rfc5280, rfc2315, rfc4055
 from pyasn1_modules.rfc5280 import CertificateList
 
-from ca.asn1 import RevokedCertificates, RevokedCertificateEntry, get_ans1_time
+from ca.asn1 import RevokedCertificates, RevokedCertificateEntry, get_ans1_time, ExtensionsRequest
 from ca.config import CertificateConfig, ca_logger
 from ca.database import IssuedCertificate, CertificateEntity, VismCADatabase
 from ca.p11 import PKCS11PrivKey, PKCS11PubKey, PKCS11Client
@@ -35,6 +35,12 @@ _revocation_reason_map = {
     "removeFromCRL": rfc5280.CRLReason("removeFromCRL"),
     "privilegeWithdrawn": rfc5280.CRLReason("privilegeWithdrawn"),
     "aACompromise": rfc5280.CRLReason("aACompromise"),
+}
+
+_rsa_pss_map = {
+    "SHA256": rfc4055.rSASSA_PSS_SHA256_Identifier,
+    "SHA384": rfc4055.rSASSA_PSS_SHA384_Identifier,
+    "SHA512": rfc4055.rSASSA_PSS_SHA512_Identifier,
 }
 
 class Certificate:
@@ -77,23 +83,34 @@ class Certificate:
 
         return self._db_entry
 
-    def _signature_algorithm_oid(self, hash_algorithm_name: str) -> str:
+    @property
+    def pem_chain(self) -> str:
+        chain = x509.load_der_x509_certificate(self.db_entry.crt_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        if self.issuer is not None:
+            chain += "\n" + self.issuer.pem_chain
+
+        return chain
+
+    def _get_algorithm_identifier(self, hash_algorithm_name: str) -> rfc5280.AlgorithmIdentifier:
+        algorithm_identifier = rfc5280.AlgorithmIdentifier()
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
-            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{hash_algorithm_name}').dotted_string
+            if self.p11_client.is_pss_supported:
+                algorithm_identifier = _rsa_pss_map[hash_algorithm_name.upper()]
+                algorithm_identifier['parameters']['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
+                return algorithm_identifier
+            else:
+                algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{hash_algorithm_name}').dotted_string
         elif self.priv_key.key_type == pkcs11.KeyType.EC:
             algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'ECDSA_WITH_{hash_algorithm_name}').dotted_string
         else:
             raise NotImplementedError
 
-        return algorithm_oid
+        algorithm_identifier["algorithm"] = univ.ObjectIdentifier(algorithm_oid)
+
+        return algorithm_identifier
 
     async def _sign_object(self, obj: Asn1Item, hash_algorithm_name: str) -> tuple[rfc5280.AlgorithmIdentifier, univ.BitString]:
-        ca_logger.info(f"Certificate {self.config.name} is signing obj {obj}")
-        signature_algorithm_dict = {
-            "algorithm": univ.ObjectIdentifier(self._signature_algorithm_oid(hash_algorithm_name))
-        }
-
-        signature_algorithm = dict_decoder(signature_algorithm_dict, asn1Spec=rfc5280.AlgorithmIdentifier())
+        signature_algorithm = self._get_algorithm_identifier(hash_algorithm_name)
         signature_bytes = self.controller.p11_client.sign_data(self.priv_key, der_encoder(obj), hash_algorithm_name)
         if self.priv_key.key_type == pkcs11.KeyType.EC:
             sig_len = len(signature_bytes)
@@ -109,7 +126,8 @@ class Certificate:
         attributes = rfc2986.Attributes().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
 
         ext_req_attribute = rfc2985.SingleAttribute()
-        ext_req_attribute_val = rfc2985.AttributeValues()
+        ext_req_attribute_val = ExtensionsRequest()
+        extensions = rfc5280.Extensions()
 
         csr_extensions = [
             self.config.x509.basic_constraints,
@@ -122,7 +140,9 @@ class Certificate:
 
         for ext in csr_extensions:
             if ext is not None:
-                ext_req_attribute_val.append(ext.to_asn1_ext())
+                extensions.append(ext.to_asn1_ext())
+
+        ext_req_attribute_val.append(extensions)
 
         ext_req_attribute["type"] = univ.ObjectIdentifier("1.2.840.113549.1.9.14")
         ext_req_attribute['values'] = ext_req_attribute_val
@@ -144,16 +164,14 @@ class Certificate:
 
         return der_encoder(csr)
 
-    async def _sign_csr(self, csr_der: bytes, days: int) -> bytes:
+    async def sign_csr(self, csr_der: bytes, days: int) -> bytes:
         csr: rfc2986.CertificationRequest = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())[0]
         csr_info = csr.getComponentByName("certificationRequestInfo")
 
         tbs_cert = rfc5280.TBSCertificate()
 
         ### Signature ###
-        signature_algorithm = rfc2986.AlgorithmIdentifier()
-        signature_algorithm_oid = univ.ObjectIdentifier(self._signature_algorithm_oid(self.CSR_SIGN_HASH_ALG))
-        signature_algorithm["algorithm"] = signature_algorithm_oid
+        signature_algorithm = self._get_algorithm_identifier(self.CSR_SIGN_HASH_ALG)
 
         ### Validity ###
         validity = rfc5280.Validity()
@@ -195,8 +213,8 @@ class Certificate:
         if ext_req_attr:
             requested_extensions = ext_req_attr['values']
             for ext_oct in requested_extensions:
-                ext = der_decoder(ext_oct, asn1Spec=rfc5280.Extension())[0]
-                extensions.append(ext)
+                for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
+                    extensions.append(ext)
 
         tbs_cert["version"] = self.CERT_VERSION
         tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(random.getrandbits(159))
@@ -230,7 +248,7 @@ class Certificate:
         tbs_crl = rfc5280.TBSCertList()
 
         signature_algorithm = rfc5280.AlgorithmIdentifier()
-        signature_algorithm["algorithm"] = univ.ObjectIdentifier(self._signature_algorithm_oid(self.CRL_SIGN_HASH_ALG))
+        signature_algorithm["algorithm"] = univ.ObjectIdentifier(self._get_algorithm_identifier(self.CRL_SIGN_HASH_ALG))
 
         revoked_certificates = RevokedCertificates()
         issued_certificates = self.database.get_issued_certificate(self.db_entry.id)
@@ -296,6 +314,12 @@ class Certificate:
 
         return der_encoder(crl)
 
+    async def verify_issued_by(self, crt_der: bytes):
+        subject = x509.load_der_x509_certificate(crt_der)
+        issuer = x509.load_der_x509_certificate(self.db_entry.crt_der)
+
+        subject.verify_directly_issued_by(issuer)
+
     async def create(self) -> CertificateEntity:
         ca_logger.info(f"Creating certificate {self.config.name}")
 
@@ -317,7 +341,7 @@ class Certificate:
         if self.config.signed_by is None:
             if self.db_entry.crt_der is None:
                 csr_der = await self._create_csr()
-                crt_der = await self._sign_csr(csr_der, self.config.x509.days)
+                crt_der = await self.sign_csr(csr_der, self.config.x509.days)
 
                 self.db_entry.crt_der = crt_der
             #
@@ -330,8 +354,10 @@ class Certificate:
         if self.issuer:
             if self.db_entry.crt_der is None:
                 csr_der = await self._create_csr()
-                crt_der = await self.issuer._sign_csr(csr_der, self.config.x509.days)
+                crt_der = await self.issuer.sign_csr(csr_der, self.config.x509.days)
                 self.db_entry.crt_der = crt_der
+
+                await self.issuer.verify_issued_by(crt_der)
 
             # if self.db_entry.crl_der is None:
             #     crl_der = await self._build_crl()

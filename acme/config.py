@@ -42,6 +42,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
     name: str
     ca: str
     ca_pem: str
+    days: int
     module_args: dict = None
     enabled: bool = True
     default: bool = False
@@ -443,7 +444,7 @@ class AcmeConfig(VismConfig):
 
     profiles: list[Profile] = field(default_factory=list)
     http01: Http01 = field(default_factory=Http01)
-    nonce_ttl_seconds: str = "300"
+    nonce_ttl_seconds: int = 300
     retry_after_seconds: str = "5"
     default_profile: Profile = field(init=False)
 

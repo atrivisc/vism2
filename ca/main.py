@@ -1,9 +1,12 @@
 """Main Vism CA class and entrypoint."""
 
 import asyncio
+import json
 from datetime import timezone, datetime
 
+from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from pyasn1.type import useful
 
 from ca import Certificate
@@ -12,6 +15,7 @@ from ca.config import CAConfig, ca_logger, ValidRevocationReasons
 from ca.database import VismCADatabase
 from ca.p11 import PKCS11Client
 from lib.controller import Controller
+from lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage
 from lib.errors import VismBreakingException
 from lib.s3 import AsyncS3Client
 from pyasn1.codec.der.encoder import encode as der_encoder
@@ -71,6 +75,26 @@ class VismCA(Controller):
         self.database.save_to_db(issued_certificate)
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
+    async def handle_csr_from_acme(self, message: AbstractIncomingMessage) -> DataExchangeCertMessage:
+        csr_message = DataExchangeCSRMessage(**json.loads(message.body))
+        csr_der_bytes = x509.load_pem_x509_csr(csr_message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+
+        issuer = self.certificates[csr_message.ca_name]
+        signed_cert_der = await issuer.sign_csr(csr_der_bytes, csr_message.days)
+        signed_cert_pem = x509.load_der_x509_certificate(signed_cert_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+        chain = signed_cert_pem + '\n' + issuer.pem_chain
+
+        cert_message = DataExchangeCertMessage(
+            chain=chain,
+            order_id=csr_message.order_id,
+            ca_name=csr_message.ca_name,
+            days=csr_message.days,
+            original_signature=message.headers["X-Vism-Signature"],
+        )
+
+        return cert_message
+
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
@@ -88,7 +112,6 @@ class VismCA(Controller):
             await asyncio.shield(self.data_exchange_module.cleanup(full=True))
 
     async def init_certificates(self):
-        """Creates and manages certificates for the CA."""
         ca_logger.info("Initializing certificates")
         for cert_config in self.config.x509_certificates:
             issuer = None

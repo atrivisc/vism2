@@ -30,13 +30,26 @@ vism_acme:
 
   profiles:
     - name: "default"
-      ca: "example-ca"
+      ca: "int_ca"
       enabled: true
       default: true
+      days: 90
+      allowed_extended_key_usage_oids:
+        - 1.3.6.1.5.5.7.3.2
+        - 1.3.6.1.5.5.7.3.1
 
       ca_pem: |
         -----BEGIN CERTIFICATE-----
-        <CA_CERT_PEM_HERE>
+        MIIBzDCCAVGgAwIBAgIUUFN0mFYocFgl6ER9sv+0C8P11JYwCgYIKoZIzj0EAwMw
+        EjEQMA4GA1UEAwwHUm9vdCBDQTAeFw0yNjAyMjUxMzIzMDRaFw0yNjAzMDcxNDIz
+        MDRaMBMxETAPBgNVBAMMCEludGVyIENBMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE
+        OnBy3sa71QWVf60q9A8WCixkCFvXMNjdZz3gykb1VlWaqG56n0oWXnIBbp+aErwB
+        Z2X1tlyz7IaJdXx7QuBqdT71M4vnzMZ5/bzGqZNjDFpk5fsQuKhVPHwpGGEjdMTi
+        o2cwZTAdBgNVHQ4EFgQUtyxLKzYKqwkRvo1n6Z8ucXoHAfwwHwYDVR0jBBgwFoAU
+        +YsMfMZLysAKdn953MaCalvxI3IwEgYDVR0TAQH/BAgwBgEB/wIBADAPBgNVHQ8B
+        Af8EBQMDBwYAMAoGCCqGSM49BAMDA2kAMGYCMQD7wviqLWB8Rk9z+m5BDYxZDiYv
+        9BdMlcMhkIrdiubRbJZgYSgJxpB6LIXrmopiemcCMQDXl04Y2cN5CdlCSIwJ6UTI
+        sTZnp4ZSAzJANuKj1AAjKeYU+MMc02foPGBoSLdwP0M=
         -----END CERTIFICATE-----
 
       module_args: {}
@@ -45,6 +58,7 @@ vism_acme:
       ca: "other-ca"
       enabled: true
       default: false
+      days: 7
       ca_pem: |
         -----BEGIN CERTIFICATE-----
         <OTHER_CA_CERT_PEM_HERE>

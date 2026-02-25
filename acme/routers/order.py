@@ -90,9 +90,7 @@ class OrderRouter:
         )
         domains = [authz.identifier_value for authz in order_authz_entities]
 
-        profile = self.controller.config.get_profile_by_name(
-            order.profile_name
-        )
+        profile = self.controller.config.get_profile_by_name(order.profile_name)
         csr = profile.validate_csr(csr_der_b64, domains)
         csr_pem = csr.public_bytes(serialization.Encoding.PEM)
 
@@ -100,17 +98,15 @@ class OrderRouter:
         order.status = OrderStatus.PROCESSING
         order = self.controller.database.save_to_db(order)
 
-        acme_logger.info(
-            "Validated order %s finalization. Sending CSR to RabbitMQ.",
-            order_id
-        )
+        acme_logger.info("Validated order %s finalization. Sending CSR to RabbitMQ.", order_id)
 
         rabbitmq_message = DataExchangeCSRMessage(
             csr_pem=csr_pem.decode("utf-8"),
-            ca_name=profile.controller,
-            profile_name=profile.name,
+            ca_name=profile.ca,
+            days=profile.days,
             module_args=profile.module_args,
             order_id=order_id,
+            profile_name=profile.name,
         )
 
         try:

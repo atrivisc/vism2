@@ -15,7 +15,7 @@ from acme.errors import ACMEProblemResponse
 from acme.middleware import AcmeAccountMiddleware, JWSMiddleware
 from acme.nonce import NonceManager
 from lib.controller import Controller
-from lib.data.exchange import DataExchangeCertMessage
+from lib.data.exchange import DataExchangeCertMessage, DataExchangeCSRMessage
 from lib.errors import VismException
 
 
@@ -24,10 +24,11 @@ class VismACMEController(Controller):
 
     configClass = AcmeConfig
     databaseClass = VismAcmeDatabase
+    config: AcmeConfig
 
     def __init__(self):
         super().__init__()
-        self.nonce_manager = NonceManager(self.config)
+        self.nonce_manager = NonceManager(self.config.nonce_ttl_seconds)
         self.api = FastAPI(lifespan=self.lifespan)
 
         self.setup_exception_handlers()
@@ -61,7 +62,7 @@ class VismACMEController(Controller):
 
         return order
 
-    async def handle_chain_from_ca(self, cert_message: DataExchangeCertMessage):
+    async def handle_chain_from_ca(self, cert_message: DataExchangeCertMessage, csr_message: DataExchangeCSRMessage):
         """Handle certificate chain received from CA."""
         order = await self._get_order_for_csr(cert_message.order_id)
         if order is None:
@@ -81,11 +82,9 @@ class VismACMEController(Controller):
                 f"Failed to load certificates from chain: {exc}"
             ) from exc
 
-        ca_profile = self.config.get_profile_by_name(cert_message.profile_name)
+        ca_profile = self.config.get_profile_by_name(csr_message.profile_name)
         if ca_profile is None:
-            raise VismException(
-                f"CA profile {cert_message.profile_name} not found"
-            )
+            raise VismException(f"CA profile {csr_message.profile_name} not found")
 
         try:
             issuer_x509 = x509.load_pem_x509_certificate(ca_profile.ca_pem.encode("utf-8"))
@@ -147,6 +146,7 @@ class VismACMEController(Controller):
     @asynccontextmanager
     async def lifespan(self, _api: FastAPI):
         """Manage application lifespan with an async context manager."""
+        await self.setup_data_exchange_module()
         asyncio.create_task(self.data_exchange_module.receive_cert())
         yield
         await asyncio.shield(self.data_exchange_module.cleanup(full=True))

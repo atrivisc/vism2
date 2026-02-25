@@ -30,8 +30,8 @@ vism_ca:
   x509_certificates:
     - name: "root_ca"
       key:
-        algorithm: RSA
-        bits: 4096
+        algorithm: EC
+        curve: secp384r1
       x509:
         days: 30
         crl_days: 7
@@ -48,8 +48,8 @@ vism_ca:
     - name: "int_ca"
       signed_by: "root_ca"
       key:
-        algorithm: RSA
-        bits: 4096
+        algorithm: EC
+        curve: secp384r1
       x509:
         days: 10
         crl_days: 7

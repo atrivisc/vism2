@@ -98,9 +98,14 @@ def camel_to_snake(name):
 
 def absolute_url(request: Request, path: str) -> str:
     """Build absolute URL from request and path."""
-    base = str(request.base_url.replace(scheme="https")).rstrip("/")
+    scheme = request.url.scheme
+    if request.headers.get("X-Forwarded-Proto"):
+        scheme = request.headers.get("X-Forwarded-Proto")
+
+    base = str(request.base_url.replace(scheme=scheme)).rstrip("/")
     if not path.startswith("/"):
         path = "/" + path
+
     return f"{base}{path}"
 
 

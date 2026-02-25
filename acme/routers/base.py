@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse, Response
 from acme.acme import VismACMEController
 from acme.config import acme_logger
 from acme.routers import AcmeRequest
+from lib.util import absolute_url
 
 
 class BaseRouter:
@@ -25,13 +26,11 @@ class BaseRouter:
 
     async def directory(self, request: AcmeRequest):
         """Return the ACME directory with service endpoints and metadata."""
-        base = request.base_url
-        base = str(base.replace(scheme="https")).rstrip("/")
         dir_obj = {
-            "newNonce": f"{base}/new-nonce",
-            "newAccount": f"{base}/new-account",
-            "newOrder": f"{base}/new-order",
-            "revokeCert": f"{base}/revoke-cert",
+            "newNonce": absolute_url(request, "/new-nonce"),
+            "newAccount": absolute_url(request, "/new-account"),
+            "newOrder": absolute_url(request, "/new-order"),
+            "revokeCert": absolute_url(request, "/revoke-cert"),
             "keyChange": None,
             "meta": {
                 "profiles": {

@@ -15,7 +15,9 @@ class PKCS11Client:
         self.config = config
         self.p11 = pkcs11.lib(config.lib_path)
         self.token: Token = self.p11.get_token(token_label=config.token_label)
+
         self.supported_mechanisms = self.token.slot.get_mechanisms()
+        self.is_pss_supported = Mechanism.RSA_PKCS_PSS in self.supported_mechanisms
 
     def _get_raw_object(self, session: Session, obj_class: pkcs11.ObjectClass, label: str) -> ObjectT:
         shared_logger.debug(f"Getting object {obj_class.name} {label}")
@@ -67,7 +69,7 @@ class PKCS11Client:
                 pass
         return real_attrs
 
-    def get_mechanism(self, key_type: pkcs11.KeyType, hash_alg: str) -> tuple[pkcs11.Mechanism | None, tuple | None]:
+    def _get_mechanism(self, key_type: pkcs11.KeyType, hash_alg: str) -> tuple[pkcs11.Mechanism | None, tuple | None]:
         mechanism_parameters = None
         if key_type == pkcs11.KeyType.RSA:
             rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS_PSS")
@@ -91,7 +93,7 @@ class PKCS11Client:
             if privkey_obj is None:
                 raise ValueError(f"No private key found with label: {privkey.label}")
 
-            mechanism, mechanism_params = self.get_mechanism(privkey.key_type, hash_alg_name)
+            mechanism, mechanism_params = self._get_mechanism(privkey.key_type, hash_alg_name)
             signature = privkey_obj.sign(data, mechanism=mechanism, mechanism_param=mechanism_params)
 
             return signature

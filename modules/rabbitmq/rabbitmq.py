@@ -9,6 +9,7 @@ from aio_pika import Message
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 from aio_pika.pool import Pool
 from aiormq import AMQPConnectionError
+from cachetools import TTLCache
 
 from modules import module_logger
 from modules.rabbitmq.config import RabbitMQConfig
@@ -32,6 +33,8 @@ class RabbitMQ(DataExchange):
         self.connection_pool: Pool = Pool(self.get_connection, max_size=20)
         self.channel_pool: Pool = Pool(self.get_channel, max_size=100)
 
+        self._messages: dict[str, DataExchangeCSRMessage] = TTLCache(ttl=900, maxsize=10000)
+
     async def get_channel(self) -> aio_pika.Channel:
         async with self.connection_pool.acquire() as connection:
             return await connection.channel(on_return_raises=True)
@@ -54,6 +57,9 @@ class RabbitMQ(DataExchange):
 
         data_json = message.to_json().encode("utf-8")
         message_signature = self.validation_module.sign(data_json)
+
+        if isinstance(message, DataExchangeCSRMessage):
+            self._messages[message_signature] = message
 
         async with self.channel_pool.acquire() as channel:
             if not channel.is_initialized:
@@ -147,49 +153,22 @@ class RabbitMQ(DataExchange):
         async with message.process():
             message_type = message.headers.get("X-Vism-Message-Type", None)
             if not message_type:
-                module_logger.error(
-                    "No message type found in message headers: %s",
-                    message.headers
-                )
+                module_logger.error("No message type found in message headers: %s", message.headers)
                 return None
 
-            module_logger.info(
-                "Processing message from RabbitMQ of type '%s'.",
-                message_type
-            )
-            module_logger.debug(
-                "Message body: %s | Signature: %s",
-                message.body, message.headers['X-Vism-Signature']
-            )
+            module_logger.info("Processing message from RabbitMQ of type '%s'.", message_type)
+            module_logger.debug("Message body: %s | Signature: %s", message.body, message.headers['X-Vism-Signature'])
 
             if not self.validation_module.verify(message.body, message.headers["X-Vism-Signature"]):
                 raise RabbitMQError('Invalid signature')
 
             if message.headers["X-Vism-Message-Type"] == "csr":
-                csr_message = DataExchangeCSRMessage(
-                    **json.loads(message.body)
-                )
-                ca_obj = Certificate(self.controller, csr_message.ca_name)
-                chain = ca_obj.sign_csr(
-                    csr_message.csr_pem, csr_message.module_args, acme=True
-                )
-
-                cert_message = DataExchangeCertMessage(
-                    chain=chain,
-                    order_id=csr_message.order_id,
-                    ca_name=csr_message.ca_name,
-                    profile_name=csr_message.profile_name,
-                    original_signature_b64=message.headers["X-Vism-Signature"],
-                )
-                await self.send_cert(cert_message)
+                response = await self.controller.handle_csr_from_acme(message)
+                await self.send_cert(response)
             elif message.headers["X-Vism-Message-Type"] == "cert":
-                cert_message = DataExchangeCertMessage(
-                    **json.loads(message.body)
-                )
-                if not self.validation_module.verify(message.body, cert_message.original_signature_b64):
-                    raise RabbitMQError('Invalid signature')
-
-                await self.controller.handle_chain_from_ca(cert_message)
+                cert_message = DataExchangeCertMessage(**json.loads(message.body))
+                csr_message = self._messages.pop(cert_message.original_signature)
+                await self.controller.handle_chain_from_ca(cert_message, csr_message)
 
             return None
 

@@ -27,16 +27,17 @@ class DataExchangeCSRMessage(DataExchangeMessage):
 
     csr_pem: str
     ca_name: str
-    profile_name: str
+    days: int
     module_args: dict
     order_id: str
+    profile_name: str = None
 
     def to_json(self) -> str:
         """Convert CSR message to JSON string."""
         return json.dumps({
             "csr_pem": self.csr_pem,
             "ca_name": self.ca_name,
-            "profile_name": self.profile_name,
+            "days": self.days,
             "module_args": self.module_args,
             "order_id": self.order_id,
         })
@@ -49,8 +50,8 @@ class DataExchangeCertMessage(DataExchangeMessage):
     chain: str
     order_id: str
     ca_name: str
-    profile_name: str
-    original_signature_b64: str
+    days: int
+    original_signature: str
 
     def to_json(self) -> str:
         """Convert certificate message to JSON string."""
@@ -58,8 +59,8 @@ class DataExchangeCertMessage(DataExchangeMessage):
             "chain": self.chain,
             "order_id": self.order_id,
             "ca_name": self.ca_name,
-            "profile_name": self.profile_name,
-            "original_signature_b64": self.original_signature_b64,
+            "days": self.days,
+            "original_signature": self.original_signature,
         })
 
 
