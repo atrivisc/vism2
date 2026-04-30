@@ -1,0 +1,19 @@
+FROM python:3.14-alpine AS builder
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.14-alpine
+
+WORKDIR /app
+
+RUN addgroup -S vism && adduser -S vism -G vism
+
+COPY --from=builder /install /usr/local
+COPY --chown=vism:vism . .
+
+USER vism
+
+CMD ["python", "main.py", "ca", "start"]

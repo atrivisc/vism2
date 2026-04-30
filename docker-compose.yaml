@@ -26,8 +26,8 @@ services:
       RABBITMQ_DEFAULT_PASS: "vism_acme"
       RABBITMQ_DEFAULT_VHOST: /
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5672:5672" # rabbitmq
+      - "15672:15672" # management web ui
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -54,6 +54,23 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  vism_ca_softhsm:
+    container_name: vism-ca
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: CA_Dockerfile_softhsm2
+      tags:
+        - vism_ca:latest
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      DB_HOST: postgres
+      S3_ENDPOINT: "http://minio:9000"
+    depends_on:
+      - minio
+      - rabbitmq
+      - postgres
 
 volumes:
   postgres_data:

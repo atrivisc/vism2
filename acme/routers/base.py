@@ -5,7 +5,7 @@ from starlette.responses import JSONResponse, Response
 from acme.acme import VismACMEController
 from acme.config import acme_logger
 from acme.routers import AcmeRequest
-from lib.util import absolute_url
+from vism_lib.util import absolute_url
 
 
 class BaseRouter:

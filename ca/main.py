@@ -7,17 +7,16 @@ from datetime import timezone, datetime
 from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from pyasn1.type import useful
 
 from ca import Certificate
 from ca.asn1 import get_ans1_time
 from ca.config import CAConfig, ca_logger, ValidRevocationReasons
 from ca.database import VismCADatabase
 from ca.p11 import PKCS11Client
-from lib.controller import Controller
-from lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage
-from lib.errors import VismBreakingException
-from lib.s3 import AsyncS3Client
+from vism_lib.controller import Controller
+from vism_lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage
+from vism_lib.errors import VismBreakingException
+from vism_lib.s3 import AsyncS3Client
 from pyasn1.codec.der.encoder import encode as der_encoder
 
 
@@ -46,16 +45,6 @@ class VismCA(Controller):
         self.p11_client = PKCS11Client(self.config.pkcs11)
         self.s3_client = AsyncS3Client(self.config.s3)
 
-    # async def update_crl(self):
-    #     """Updates CRLs for all certificates managed by the CA."""
-    #     ca_logger.info("Updating CRLs for internally managed certificates")
-    #     for cert_config in self.config.x509_certificates:
-    #         if cert_config.externally_managed:
-    #             continue
-    #
-    #         cert = Certificate(self, cert_config.name)
-    #         await cert.update_crl()
-    #
     async def update_crl(self):
         pass
 

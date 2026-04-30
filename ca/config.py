@@ -20,7 +20,7 @@ from pyasn1_modules import rfc5280
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
-from lib.config import VismConfig
+from vism_lib.config import VismConfig
 from pyasn1.codec.der.encoder import encode as der_encoder
 
 logger = logging.getLogger(__name__)

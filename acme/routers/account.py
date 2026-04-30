@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Router for ACME account operations."""
 
 import secrets
@@ -7,7 +6,7 @@ from fastapi import APIRouter
 from starlette.responses import JSONResponse
 
 from acme.errors import ACMEProblemResponse
-from lib.util import absolute_url
+from vism_lib.util import absolute_url
 from acme.db import AccountEntity, JWKEntity
 from acme.acme import VismACMEController
 from acme.routers import AcmeRequest

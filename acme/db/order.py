@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Database models for ACME order entities."""
 
 from datetime import datetime, timedelta
@@ -10,7 +9,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
-from lib.database import Base
+from vism_lib.database import Base
 from .account import AccountEntity
 from .error import ErrorEntity
 

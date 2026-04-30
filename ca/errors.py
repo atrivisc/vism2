@@ -1,6 +1,6 @@
 """Set of Vism CA specific exceptions"""
 
-from lib.errors import VismException
+from vism_lib.errors import VismException
 
 
 class GenCertException(VismException):

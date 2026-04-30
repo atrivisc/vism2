@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 
 """Database models for ACME authorization entities."""
 
@@ -11,8 +10,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
-from lib.database import Base
-from lib.util import absolute_url
+from vism_lib.database import Base
+from vism_lib.util import absolute_url
 from .order import OrderEntity
 from .error import ErrorEntity
 
@@ -43,11 +42,6 @@ class ChallengeStatus(str, Enum):
     VALID = "valid"
     INVALID = "invalid"
 
-
-class ChallengeType(str, Enum):
-    """Enumeration of ACME challenge types."""
-
-    HTTP = "http-01"
 
 def get_expiry_time():
     return (datetime.now() + timedelta(hours=12)).isoformat()
@@ -102,7 +96,7 @@ class ChallengeEntity(Base):
 
     __tablename__ = 'challenge'
 
-    type: Mapped[ChallengeType] = mapped_column(String)
+    type: Mapped[str] = mapped_column(String)
     key_authorization: Mapped[str] = mapped_column(String)
     status: Mapped[ChallengeStatus] = mapped_column(String)
 

@@ -1,5 +1,4 @@
 """Configuration module for VISM ACME server."""
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 
 import base64
 import os
@@ -16,8 +15,8 @@ from pydantic import field_validator
 from pydantic.dataclasses import dataclass
 
 from acme.errors import ACMEProblemResponse
-from lib.config import VismConfig
-from lib.util import fix_base64_padding, snake_to_camel, is_valid_subnet
+from vism_lib.config import VismConfig
+from vism_lib.util import fix_base64_padding, snake_to_camel, is_valid_subnet
 
 
 @dataclass
@@ -47,12 +46,12 @@ class Profile:  # pylint: disable=too-many-instance-attributes
     enabled: bool = True
     default: bool = False
 
+    allowed_challenge_types: list[str] = None
     allowed_extension_oids: list[str] = None
     allowed_basic_constraints: list[str] = None
     allowed_key_usage: list[str] = None
     allowed_extended_key_usage_oids: list[str] = None
 
-    supported_challenge_types: list[str] = None
     pre_validated: list[DomainValidation] = None
     acl: list[DomainValidation] = None
     cluster: list[str] = None
@@ -381,9 +380,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
         return False
 
     def __post_init__(self):
-        if self.supported_challenge_types is None:
-            self.supported_challenge_types = ["http-01"]
-
         if self.allowed_extension_oids is None:
             self.allowed_extension_oids = [
                 x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME.dotted_string,
@@ -430,6 +426,13 @@ class Http01:
             raise ValueError("Port must be between 1 and 65535")
         return v
 
+@dataclass
+class ChallengeType:
+    """Challenge type configuration."""
+
+    enabled: bool
+    module: str
+    args: dict = {}
 
 acme_logger = logging.getLogger("vism_acme")
 
@@ -444,6 +447,7 @@ class AcmeConfig(VismConfig):
 
     profiles: list[Profile] = field(default_factory=list)
     http01: Http01 = field(default_factory=Http01)
+    challenge_types: list[ChallengeType] = field(default_factory=list)
     nonce_ttl_seconds: int = 300
     retry_after_seconds: str = "5"
     default_profile: Profile = field(init=False)
@@ -467,6 +471,19 @@ class AcmeConfig(VismConfig):
             raise ValueError("No default profile found.")
 
         self.default_profile = default_profiles[0]
+
+    def get_challenge_type_config(self, challenge_type: str) -> ChallengeType:
+        """Get challenge type configuration."""
+        challenge_types = list(
+            filter(lambda challenge_type: challenge_type.module == challenge_type, self.challenge_types)
+        )
+        if len(challenge_types) == 0:
+            raise ACMEProblemResponse(
+                error_type="invalidChallengeType",
+                title=f"Challenge type '{challenge_type}' not found."
+            )
+
+        return challenge_types[0]
 
     def get_profile_by_name(self, name: str) -> Optional[Profile]:
         """Get profile by name, or return default if name is empty."""

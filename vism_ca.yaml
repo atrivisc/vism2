@@ -10,20 +10,20 @@ vism_ca:
 
   s3:
     bucket: "vism"
-    endpoint: "http://localhost:9000"
+    endpoint: "{{ env['S3_ENDPOINT'] }}"
     access_key: "minioadmin"
     secret_key: "minioadmin"
 
   database:
     data_validation_key: "super-secret-key"
-    host: "localhost"
+    host: "{{ env['DB_HOST'] }}"
     port: "5432"
     database: "vism_ca"
     username: "vism_ca"
     password: "vism_ca"
 
   pkcs11:
-    lib_path: /usr/local/lib/softhsm/libsofthsm2.so
+    lib_path: /usr/lib/softhsm/libsofthsm2.so
     token_label: TEST_01
     user_pin: "1234"
 

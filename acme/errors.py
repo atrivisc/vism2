@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 
 """VISM ACME error and exception classes."""
 
@@ -8,7 +7,7 @@ from pydantic.dataclasses import dataclass
 from starlette.responses import JSONResponse
 
 from acme.db import OrderEntity
-from lib.errors import VismException
+from vism_lib.errors import VismException
 
 
 @dataclass

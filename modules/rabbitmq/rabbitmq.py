@@ -14,7 +14,7 @@ from cachetools import TTLCache
 from modules import module_logger
 from modules.rabbitmq.config import RabbitMQConfig
 from modules.rabbitmq.errors import RabbitMQError
-from lib.data.exchange import (
+from vism_lib.data.exchange import (
     DataExchange,
     DataExchangeCSRMessage,
     DataExchangeMessage,

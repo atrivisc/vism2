@@ -23,14 +23,19 @@ from acme.db import (
 class Http01Validator:
     """Validator for HTTP-01 ACME challenges."""
 
-    def __init__(self, controller, challenge: ChallengeEntity):
+    def __init__(self, controller, challenge: ChallengeEntity, port: int = 80, follow_redirect: bool = True, timeout_seconds: int = 2, retries: int = 1, retry_delay_seconds: float = 5):
         self.controller = controller
         self.challenge = challenge
 
+        self.port = port
+        self.follow_redirect = follow_redirect
+        self.timeout_seconds = timeout_seconds
+        self.retries = retries
+        self.retry_delay_seconds = retry_delay_seconds
+
     async def get_session(self) -> aiohttp.ClientSession:
         """Create an aiohttp session."""
-        timeout_seconds = self.controller.config.http01.timeout_seconds
-        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
 
         return aiohttp.ClientSession(
             timeout=timeout,
@@ -38,11 +43,8 @@ class Http01Validator:
         )
 
     async def _fetch_with_retries(self, session, url):
-        retries = self.controller.config.http01.retries
-        delay = self.controller.config.http01.retry_delay_seconds
-
         last_exc = None
-        for attempt in range(1, retries + 1):
+        for attempt in range(1, self.retries + 1):
             try:
                 async with session.get(url) as response:
                     text = await response.text()
@@ -57,10 +59,10 @@ class Http01Validator:
                 last_exc = exc
                 acme_logger.warning(
                     "HTTP-01 attempt %s/%s failed: %s",
-                    attempt, retries, exc
+                    attempt, self.retries, exc
                 )
-                if attempt < retries:
-                    await asyncio.sleep(delay)
+                if attempt < self.retries:
+                    await asyncio.sleep(self.retry_delay_seconds)
 
         raise last_exc
 
@@ -71,9 +73,8 @@ class Http01Validator:
         )
 
         token = self.challenge.key_authorization.split(".")[0]
-        port = self.controller.config.http01.port
         validation_url = (
-            f"http://{self.challenge.authz.identifier_value}:{port}"
+            f"http://{self.challenge.authz.identifier_value}:{self.port}"
             f"/.well-known/acme-challenge/{token}"
         )
 

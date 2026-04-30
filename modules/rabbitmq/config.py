@@ -1,7 +1,7 @@
 import os
 from typing import ClassVar
 from pydantic.dataclasses import dataclass
-from lib.data.exchange import DataExchangeConfig
+from vism_lib.data.exchange import DataExchangeConfig
 
 
 @dataclass

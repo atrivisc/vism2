@@ -1,9 +1,8 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Database interface for VISM ACME operations."""
 
 from typing import Optional
 from jwcrypto.jwk import JWK
-from lib.database import VismDatabase
+from vism_lib.database import VismDatabase
 from acme.db import (
     OrderEntity,
     AccountEntity,

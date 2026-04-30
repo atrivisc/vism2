@@ -3,10 +3,10 @@ from operator import getitem
 from typing import TypeVar
 
 import pkcs11
-from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive, mechanisms, Slot, Mechanism, MGF
+from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive,  Mechanism, MGF
 from ca.config import PKCS11Config
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
-from lib.config import shared_logger
+from vism_lib.config import shared_logger
 
 ObjectT = TypeVar('ObjectT', bound=pkcs11.Object)
 

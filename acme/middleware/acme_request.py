@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 
 """Middleware for ACME request validation and account handling."""
 
@@ -13,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, JSONResponse
 
 from acme.errors import ACMEProblemResponse
-from lib.util import is_valid_ip
+from vism_lib.util import is_valid_ip
 from acme.db import AccountEntity
 from acme.db import IdentifierType
 

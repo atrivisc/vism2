@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 
 """Database models for JSON Web Key (JWK) entities."""
 
@@ -7,7 +6,7 @@ from jwcrypto.jwk import JWK
 from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
-from lib.database import Base
+from vism_lib.database import Base
 
 
 class JWKEntity(Base):

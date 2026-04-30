@@ -2,13 +2,10 @@
 CLI tool for managing CA and ACME components.
 """
 import argparse
-import logging
 from typing import Any, Optional
 import uvicorn
 
 from ca.config import ValidRevocationReasons
-
-logger = logging.getLogger("cli")
 
 def main() -> Optional[Any]:
     ### Base arguments ###

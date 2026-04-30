@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Router for ACME order operations."""
 
 import secrets
@@ -7,8 +6,8 @@ from typing import Any
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
-from lib.data.exchange import DataExchangeCSRMessage
-from lib.util import absolute_url, get_client_ip
+from vism_lib.data.exchange import DataExchangeCSRMessage
+from vism_lib.util import absolute_url, get_client_ip
 from acme.errors import ACMEProblemResponse
 from acme.config import acme_logger
 from acme.db.authz import (

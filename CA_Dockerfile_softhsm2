@@ -1,0 +1,33 @@
+FROM python:3.14-alpine AS builder
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.14-alpine
+
+ARG SOFTHSM_INIT_TOKEN=true
+ARG SOFTHSM_INIT_SO_PIN=1234
+ARG SOFTHSM_INIT_USER_PIN=1234
+ARG SOFTHSM_INIT_TOKEN_LABEL=TEST_01
+
+ARG VISM_USER=vism
+ARG VISM_GROUP=vism
+
+WORKDIR /app
+
+RUN apk add --no-cache softhsm
+
+RUN addgroup -S ${VISM_GROUP} && adduser -S ${VISM_USER} -G ${VISM_GROUP}
+
+RUN mkdir -p /var/lib/softhsm/tokens
+RUN if [ "$SOFTHSM_INIT_TOKEN" = "true" ]; then softhsm2-util --so-pin "${SOFTHSM_INIT_SO_PIN}" --pin "${SOFTHSM_INIT_USER_PIN}" --init-token --slot 0 --label "${SOFTHSM_INIT_TOKEN_LABEL}"; fi
+RUN chown -R ${VISM_USER}:${VISM_GROUP} /var/lib/softhsm
+
+COPY --from=builder /install /usr/local
+COPY --chown=${VISM_USER}:${VISM_GROUP} . .
+
+USER ${VISM_USER}
+
+CMD ["python", "main.py", "ca", "start"]

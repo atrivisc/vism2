@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Database models for ACME account entities."""
 
 from uuid import UUID
@@ -7,7 +6,7 @@ from sqlalchemy import String, ForeignKey, Uuid
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
-from lib.database import Base
+from vism_lib.database import Base
 from acme.db.jwk import JWKEntity
 
 

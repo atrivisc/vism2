@@ -14,9 +14,9 @@ from acme.db import OrderEntity, OrderStatus, ErrorEntity
 from acme.errors import ACMEProblemResponse
 from acme.middleware import AcmeAccountMiddleware, JWSMiddleware
 from acme.nonce import NonceManager
-from lib.controller import Controller
-from lib.data.exchange import DataExchangeCertMessage, DataExchangeCSRMessage
-from lib.errors import VismException
+from vism_lib.controller import Controller
+from vism_lib.data.exchange import DataExchangeCertMessage, DataExchangeCSRMessage
+from vism_lib.errors import VismException
 
 
 class VismACMEController(Controller):

@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Middleware for JWS (JSON Web Signature) validation."""
 
 import json
@@ -11,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from acme.errors import ACMEProblemResponse
-from lib.util import b64u_decode
+from vism_lib.util import b64u_decode
 from acme.middleware import AcmeProtectedPayload, AcmeProtectedHeader
 
 logger = logging.getLogger(__name__)

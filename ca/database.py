@@ -11,8 +11,8 @@ from pyasn1_modules import rfc5280
 from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary, Text
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
-from lib.database import Base, VismDatabase
-from lib.errors import VismException, VismBreakingException
+from vism_lib.database import Base, VismDatabase
+from vism_lib.errors import VismException, VismBreakingException
 
 
 class ModuleData:

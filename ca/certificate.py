@@ -12,7 +12,6 @@ from cryptography.x509 import SignatureAlgorithmOID
 from pyasn1 import error
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
-from pyasn1.codec.native.decoder import decode as dict_decoder
 from pyasn1.type import univ, tag, useful
 from pyasn1.type.base import Asn1Item
 from pyasn1_modules import rfc2985, rfc2986, rfc5280, rfc2315, rfc4055
@@ -22,7 +21,7 @@ from ca.asn1 import RevokedCertificates, RevokedCertificateEntry, get_ans1_time,
 from ca.config import CertificateConfig, ca_logger
 from ca.database import IssuedCertificate, CertificateEntity, VismCADatabase
 from ca.p11 import PKCS11PrivKey, PKCS11PubKey, PKCS11Client
-from lib.errors import VismBreakingException
+from vism_lib.errors import VismBreakingException
 
 _revocation_reason_map = {
     "unspecified": rfc5280.CRLReason("unspecified"),

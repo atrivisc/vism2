@@ -1,9 +1,8 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Database models for ACME error entities."""
 
 from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
-from lib.database import Base
+from vism_lib.database import Base
 
 
 class ErrorEntity(Base):

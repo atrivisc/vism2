@@ -1,4 +1,3 @@
-# Licensed under GPL 3: https://www.gnu.org/licenses/gpl-3.0.html
 """Router for ACME authorization operations."""
 
 from datetime import datetime
@@ -72,6 +71,8 @@ class AuthzRouter:
             challenge_entity = self.controller.database.save_to_db(
                 challenge_entity
             )
+
+            challenge_type_config = self.controller.config.get_challenge_type_config(challenge_entity.type)
 
             validator = Http01Validator(self.controller, challenge_entity)
             background_tasks.add_task(validator.validate)
