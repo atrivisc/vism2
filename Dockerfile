@@ -2,6 +2,8 @@ FROM python:3.14-alpine AS builder
 
 WORKDIR /app
 
+ENV CONFIG_DIR=/app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
