@@ -7,7 +7,7 @@ cryptography==46.0.5
 fastapi==0.129.2
 jwcrypto==1.5.6
 psycopg2-binary==2.9.11
-pyasn1==0.6.2
+pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pydantic==2.12.5
 python-pkcs11==0.9.3
