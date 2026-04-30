@@ -16,4 +16,4 @@ starlette==0.52.1
 uvicorn==0.41.0
 PyYAML==6.0.3
 yaml-pydantic-dataclass==0.1.1
-vism-lib==0.1.2
+vism-lib==0.1.3

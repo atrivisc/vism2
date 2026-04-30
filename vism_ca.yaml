@@ -18,9 +18,9 @@ vism_ca:
     data_validation_key: "super-secret-key"
     host: "{{ env['DB_HOST'] }}"
     port: "5432"
-    database: "vism_ca"
-    username: "vism_ca"
-    password: "vism_ca"
+    database: "vism_acme"
+    username: "vism_acme"
+    password: "vism_acme"
 
   pkcs11:
     lib_path: /usr/lib/softhsm/libsofthsm2.so
@@ -30,8 +30,8 @@ vism_ca:
   x509_certificates:
     - name: "root_ca"
       key:
-        algorithm: EC
-        curve: secp384r1
+        algorithm: RSA
+        bits: 4096
       x509:
         days: 30
         crl_days: 7
@@ -48,8 +48,8 @@ vism_ca:
     - name: "int_ca"
       signed_by: "root_ca"
       key:
-        algorithm: EC
-        curve: secp384r1
+        algorithm: RSA
+        bits: 4096
       x509:
         days: 10
         crl_days: 7

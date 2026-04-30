@@ -63,6 +63,8 @@ services:
       dockerfile: CA_Dockerfile_softhsm2
       tags:
         - vism_ca:latest
+    volumes:
+      - logs:/app/logs
     environment:
       RABBITMQ_HOST: rabbitmq
       DB_HOST: postgres
@@ -76,3 +78,4 @@ volumes:
   postgres_data:
   rabbitmq_data:
   minio_data:
+  logs:

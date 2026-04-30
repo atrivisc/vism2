@@ -9,7 +9,7 @@ FROM python:3.14-alpine
 
 WORKDIR /app
 
-RUN addgroup -S vism && adduser -S vism -G vism
+RUN addgroup -g 977 -S vism && adduser -u 977 -S vism -G vism
 
 COPY --from=builder /install /usr/local
 COPY --chown=vism:vism . .

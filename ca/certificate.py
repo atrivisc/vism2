@@ -370,12 +370,6 @@ class Certificate:
         await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
         await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crl/{self.config.name}.crl")
 
-        with open(f"/home/user01/Downloads/{self.config.name}.crt", "wb+") as f:
-            f.write(self.db_entry.crt_der)
-
-        with open(f"/home/user01/Downloads/{self.config.name}.pub", "wb+") as f:
-            f.write(self.pub_key.public_bytes())
-
         self._db_entry = self.database.save_to_db(self.db_entry)
         return self.db_entry
 
