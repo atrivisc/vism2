@@ -38,5 +38,5 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/vism:${{ steps.version.outputs.VERSION }}
             ${{ secrets.DOCKERHUB_USERNAME }}/vism:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache,mode=max
