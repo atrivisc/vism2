@@ -17,7 +17,7 @@ class AccountEntity(Base):
 
     kid: Mapped[str] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(32))
-    contact: Mapped[str] = mapped_column(String, nullable=True, default=None)
+    contact: Mapped[str] = mapped_column(String(256), nullable=True, default=None)
 
     jwk_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey('jwk.id'), init=False

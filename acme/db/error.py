@@ -10,8 +10,8 @@ class ErrorEntity(Base):
 
     __tablename__ = 'error'
 
-    type: Mapped[str] = mapped_column(String, nullable=True, default=None)
-    title: Mapped[str] = mapped_column(String, nullable=True, default=None)
+    type: Mapped[str] = mapped_column(String(32), nullable=True, default=None)
+    title: Mapped[str] = mapped_column(Text, nullable=True, default=None)
     detail: Mapped[str] = mapped_column(Text, nullable=True, default=None)
 
     def to_dict(self):

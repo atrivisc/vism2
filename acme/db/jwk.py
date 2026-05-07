@@ -14,16 +14,16 @@ class JWKEntity(Base):
 
     __tablename__ = 'jwk'
 
-    kty: Mapped[str] = mapped_column(String(2048))
+    kty: Mapped[str] = mapped_column(String(8))
 
     ### RSA ###
     n: Mapped[str] = mapped_column(Text, default=None, nullable=True)
-    e: Mapped[str] = mapped_column(String, default=None, nullable=True)
+    e: Mapped[str] = mapped_column(String(16), default=None, nullable=True)
 
     ### EC ###
-    crv: Mapped[str] = mapped_column(String, default=None, nullable=True)
-    x: Mapped[str] = mapped_column(String, default=None, nullable=True)
-    y: Mapped[str] = mapped_column(String, default=None, nullable=True)
+    crv: Mapped[str] = mapped_column(String(16), default=None, nullable=True)
+    x: Mapped[str] = mapped_column(String(128), default=None, nullable=True)
+    y: Mapped[str] = mapped_column(String(128), default=None, nullable=True)
 
     ### OCT ###
     k: Mapped[str] = mapped_column(Text, default=None, nullable=True)
