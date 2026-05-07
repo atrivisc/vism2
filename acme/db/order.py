@@ -32,7 +32,7 @@ class OrderEntity(Base):
 
     __tablename__ = 'order'
 
-    profile_name: Mapped[str] = mapped_column(String)
+    profile_name: Mapped[str] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String, default="pending")
 
     not_before: Mapped[str] = mapped_column(

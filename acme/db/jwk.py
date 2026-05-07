@@ -14,7 +14,7 @@ class JWKEntity(Base):
 
     __tablename__ = 'jwk'
 
-    kty: Mapped[str] = mapped_column(String)
+    kty: Mapped[str] = mapped_column(String(2048))
 
     ### RSA ###
     n: Mapped[str] = mapped_column(Text, default=None, nullable=True)

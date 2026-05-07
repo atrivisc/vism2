@@ -51,9 +51,9 @@ class AuthzEntity(Base):
 
     __tablename__ = 'authz'
 
-    identifier_type: Mapped[IdentifierType] = mapped_column(String)
-    identifier_value: Mapped[str] = mapped_column(String)
-    status: Mapped[AuthzStatus] = mapped_column(String)
+    identifier_type: Mapped[IdentifierType] = mapped_column(String(32))
+    identifier_value: Mapped[str] = mapped_column(String(256))
+    status: Mapped[AuthzStatus] = mapped_column(String(32))
     wildcard: Mapped[bool] = mapped_column(Boolean)
     expires: Mapped[str] = mapped_column(
         String,
@@ -96,9 +96,9 @@ class ChallengeEntity(Base):
 
     __tablename__ = 'challenge'
 
-    type: Mapped[str] = mapped_column(String)
-    key_authorization: Mapped[str] = mapped_column(String)
-    status: Mapped[ChallengeStatus] = mapped_column(String)
+    type: Mapped[str] = mapped_column(String(32))
+    key_authorization: Mapped[str] = mapped_column(String(256))
+    status: Mapped[ChallengeStatus] = mapped_column(String(32))
 
     authz_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey('authz.id'), init=False

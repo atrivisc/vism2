@@ -15,8 +15,8 @@ class AccountEntity(Base):
 
     __tablename__ = 'account'
 
-    kid: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String)
+    kid: Mapped[str] = mapped_column(String(256))
+    status: Mapped[str] = mapped_column(String(32))
     contact: Mapped[str] = mapped_column(String, nullable=True, default=None)
 
     jwk_id: Mapped[UUID] = mapped_column(

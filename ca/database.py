@@ -23,7 +23,7 @@ class IssuedCertificate(Base):
 
     __tablename__ = 'issued_certificate'
 
-    status_flag: Mapped[str] = mapped_column(String)
+    status_flag: Mapped[str] = mapped_column(String(8))
     expiration_date: Mapped[bytes] = mapped_column(LargeBinary)
     serial: Mapped[bytes] = mapped_column(LargeBinary)
     subject: Mapped[bytes] = mapped_column(LargeBinary)
@@ -50,7 +50,7 @@ class CertificateEntity(Base):
 
     __tablename__ = 'certificate'
 
-    name: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String(256))
     externally_managed: Mapped[bool] = mapped_column(Boolean)
     crl_number: Mapped[int] = mapped_column(Integer, default=1)
 
