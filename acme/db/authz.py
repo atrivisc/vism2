@@ -56,7 +56,7 @@ class AuthzEntity(Base):
     status: Mapped[AuthzStatus] = mapped_column(String(32))
     wildcard: Mapped[bool] = mapped_column(Boolean)
     expires: Mapped[str] = mapped_column(
-        String,
+        String(64),
         default_factory=get_expiry_time,
         init=False
     )

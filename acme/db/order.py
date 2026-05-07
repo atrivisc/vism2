@@ -42,7 +42,7 @@ class OrderEntity(Base):
         Integer, default=None, nullable=True
     )
     expires: Mapped[str] = mapped_column(
-        String,
+        String(64),
         default_factory=get_expiry_time,
         init=False
     )
