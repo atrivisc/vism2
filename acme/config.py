@@ -432,7 +432,7 @@ class ChallengeType:
 
     enabled: bool
     module: str
-    args: dict = {}
+    args: dict = field(default_factory=dict)
 
 acme_logger = logging.getLogger("vism_acme")
 
