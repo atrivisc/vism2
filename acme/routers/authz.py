@@ -72,8 +72,6 @@ class AuthzRouter:
                 challenge_entity
             )
 
-            challenge_type_config = self.controller.config.get_challenge_type_config(challenge_entity.type)
-
             validator = Http01Validator(self.controller, challenge_entity)
             background_tasks.add_task(validator.validate)
 

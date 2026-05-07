@@ -236,6 +236,24 @@ class Profile:  # pylint: disable=too-many-instance-attributes
         client_allowed = self._client_is_allowed(client_ip, domain)
         client_in_cluster = self._client_in_cluster(client_ip)
 
+        if self.acl and not client_allowed:
+            raise ACMEProblemResponse(
+                error_type="unauthorized",
+                title=(
+                    f"Client IP '{client_ip}' is not allowed to "
+                    f"access '{domain}'"
+                ),
+            )
+
+        if self.cluster and not client_in_cluster:
+            raise ACMEProblemResponse(
+                error_type="unauthorized",
+                title=(
+                    f"Client IP '{client_ip}' is not in cluster "
+                    f"'{self.cluster}'"
+                ),
+            )
+
         # if (not pre_validated and not client_allowed and
         #         client_ip not in domain_ips and not client_in_cluster):
         #     raise ACMEProblemResponse(
@@ -447,7 +465,6 @@ class AcmeConfig(VismConfig):
 
     profiles: list[Profile] = field(default_factory=list)
     http01: Http01 = field(default_factory=Http01)
-    challenge_types: list[ChallengeType] = field(default_factory=list)
     nonce_ttl_seconds: int = 300
     retry_after_seconds: str = "5"
     default_profile: Profile = field(init=False)
@@ -471,19 +488,6 @@ class AcmeConfig(VismConfig):
             raise ValueError("No default profile found.")
 
         self.default_profile = default_profiles[0]
-
-    def get_challenge_type_config(self, challenge_type: str) -> ChallengeType:
-        """Get challenge type configuration."""
-        challenge_types = list(
-            filter(lambda challenge_type: challenge_type.module == challenge_type, self.challenge_types)
-        )
-        if len(challenge_types) == 0:
-            raise ACMEProblemResponse(
-                error_type="invalidChallengeType",
-                title=f"Challenge type '{challenge_type}' not found."
-            )
-
-        return challenge_types[0]
 
     def get_profile_by_name(self, name: str) -> Optional[Profile]:
         """Get profile by name, or return default if name is empty."""
