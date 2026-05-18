@@ -98,7 +98,7 @@ class VismCA(Controller):
             ca_logger.critical(f"CA encountered a fatal error: {e}")
             raise e
         finally:
-            await asyncio.shield(self.data_exchange_module.cleanup(full=True))
+            await self.data_exchange_module.cleanup(full=True)
 
     async def init_certificates(self):
         ca_logger.info("Initializing certificates")
@@ -123,7 +123,7 @@ def main(function: str = None, serial: int | str = None, revoke_reason: ValidRev
             asyncio.run(ca.update_crl())
         if function == "revoke":
             asyncio.run(ca.revoke_certificates(serial, revoke_reason))
-    except KeyboardInterrupt:
+    except Exception:
         ca.shutdown()
 
 if __name__ == '__main__':
