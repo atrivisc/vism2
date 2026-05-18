@@ -123,8 +123,9 @@ def main(function: str = None, serial: int | str = None, revoke_reason: ValidRev
             asyncio.run(ca.update_crl())
         if function == "revoke":
             asyncio.run(ca.revoke_certificates(serial, revoke_reason))
-    except Exception:
+    except Exception as e:
         ca.shutdown()
+        raise e
 
 if __name__ == '__main__':
     main()
