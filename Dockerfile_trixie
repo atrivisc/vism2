@@ -13,7 +13,7 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-RUN addgroup -g 977 -S vism && adduser -u 977 -S vism -G vism
+RUN addgroup --system --gid 977 vism && adduser --system --uid 977 --ingroup vism --no-create-home vism
 
 COPY --from=builder /install /usr/local
 COPY --chown=vism:vism . .
