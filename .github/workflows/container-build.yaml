@@ -8,7 +8,26 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: alpine
+            dockerfile: Dockerfile
+            suffix: ""
+            cache_key: buildcache-alpine
+          - flavor: trixie
+            dockerfile: Dockerfile_trixie
+            suffix: "-trixie"
+            cache_key: buildcache-trixie
+          - flavor: bookworm
+            dockerfile: Dockerfile_bookworm
+            suffix: "-bookworm"
+            cache_key: buildcache-bookworm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,30 +44,30 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Parse version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/vism
+          flavor: |
+            latest=${{ matrix.flavor == 'alpine' }}
+            suffix=${{ matrix.suffix }},onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
-      - name: Build and push Docker image (Alpine)
+      - name: Build and push (${{ matrix.flavor }})
         uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
-          file: "./Dockerfile"
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/vism:${{ steps.version.outputs.VERSION }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache,mode=max
-
-      - name: Build and push Docker image (Trixie)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          file: "./Dockerfile_trixie"
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/vism:${{ steps.version.outputs.VERSION }}-trixie
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:buildcache,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:${{ matrix.cache_key }}
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/vism:${{ matrix.cache_key }},mode=max
+          provenance: true
+          sbom: true
