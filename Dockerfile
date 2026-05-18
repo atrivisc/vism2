@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.14-alpine
 
+RUN apk upgrade --no-cache
+RUN apk add libstdc++ --no-cache
+
 WORKDIR /app
 
 RUN addgroup -g 977 -S vism && adduser -u 977 -S vism -G vism
