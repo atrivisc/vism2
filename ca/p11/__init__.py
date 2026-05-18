@@ -65,7 +65,7 @@ class PKCS11Client:
         for attr in Attribute:
             try:
                 real_attrs[attr] = getitem(obj, attr.value)
-            except AttributeTypeInvalid, ValueError, NotImplementedError, AttributeSensitive:
+            except AttributeTypeInvalid, ValueError, NotImplementedError, AttributeSensitive, pkcs11.exceptions.FunctionFailed:
                 pass
         return real_attrs
 
