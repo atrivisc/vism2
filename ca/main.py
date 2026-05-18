@@ -88,6 +88,7 @@ class VismCA(Controller):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
         try:
+            await self.s3_client.create_bucket()
             await self.setup_data_exchange_module()
             await self.init_certificates()
             await self.data_exchange_module.receive_csr()
