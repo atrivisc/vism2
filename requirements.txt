@@ -16,7 +16,7 @@ starlette==0.52.1
 uvicorn==0.41.0
 PyYAML==6.0.3
 yaml-pydantic-dataclass==0.1.1
-vism-lib==0.1.5
+vism-lib==0.1.7
 PyMySQL==1.1.3
 PyMySQL[rsa]==1.1.3
 PyMySQL[ed25519]==1.1.3
