@@ -26,16 +26,22 @@ class VismAcmeDatabase(VismDatabase):
 
     def get_order_by_id(self, order_id: str) -> Optional[OrderEntity]:
         """Get an order by its ID."""
-        return self.get(OrderEntity, OrderEntity.id == UUID(order_id))
+        if isinstance(order_id, str):
+            order_id = UUID(order_id)
+
+        return self.get(OrderEntity, OrderEntity.id == order_id)
 
     def get_authz_by_order_id(
             self,
             order_id: str
     ) -> Optional[list[AuthzEntity]]:
         """Get all authorizations for an order."""
+        if isinstance(order_id, str):
+            order_id = UUID(order_id)
+
         return self.get(
             AuthzEntity,
-            AuthzEntity.order_id == UUID(order_id),
+            AuthzEntity.order_id == order_id,
             multiple=True
         )
 
@@ -44,22 +50,31 @@ class VismAcmeDatabase(VismDatabase):
             authz_id: str
     ) -> Optional[list[ChallengeEntity]]:
         """Get all challenges for an authorization."""
+        if isinstance(authz_id, str):
+            authz_id = UUID(authz_id)
+
         return self.get(
             ChallengeEntity,
-            ChallengeEntity.authz_id == UUID(authz_id),
+            ChallengeEntity.authz_id ==authz_id,
             multiple=True
         )
 
     def get_authz_by_id(self, authz_id: str) -> Optional[AuthzEntity]:
         """Get an authorization by its ID."""
-        return self.get(AuthzEntity, AuthzEntity.id == UUID(authz_id))
+        if isinstance(authz_id, str):
+            authz_id = UUID(authz_id)
+
+        return self.get(AuthzEntity, AuthzEntity.id == authz_id)
 
     def get_challenge_by_id(
             self,
             challenge_id: str
     ) -> Optional[ChallengeEntity]:
         """Get a challenge by its ID."""
-        return self.get(ChallengeEntity, ChallengeEntity.id == UUID(challenge_id))
+        if isinstance(challenge_id, str):
+            challenge_id = UUID(challenge_id)
+
+        return self.get(ChallengeEntity, ChallengeEntity.id == challenge_id)
 
     def get_account_by_jwk(
             self,
