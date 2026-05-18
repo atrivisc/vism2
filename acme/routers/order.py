@@ -233,7 +233,7 @@ class OrderRouter:
             authz_entity = self.controller.database.save_to_db(authz_entity)
             authz_entities.append(authz_entity)
 
-            for challenge_type in profile.supported_challenge_types:
+            for challenge_type in profile.allowed_challenge_types:
                 token = secrets.token_urlsafe(32)
                 key_authorization = (
                     token + "." + request.state.account.jwk.thumbprint()

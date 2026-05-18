@@ -276,7 +276,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
             "module_args": self.module_args,
             "enabled": self.enabled,
             "default": self.default,
-            "supported_challenge_types": self.supported_challenge_types,
+            "allowed_challenge_types": self.allowed_challenge_types,
             "pre_validated": (
                 [dv.to_dict() for dv in self.pre_validated]
                 if self.pre_validated else None
@@ -288,7 +288,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
             "cluster": self.cluster,
         }
 
-    @field_validator("supported_challenge_types")
+    @field_validator("allowed_challenge_types")
     @classmethod
     def challenge_types_must_be_valid(cls, v):
         """Validate challenge types."""
