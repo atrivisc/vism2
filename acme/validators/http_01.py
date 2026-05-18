@@ -10,7 +10,7 @@ from aiohttp import (
     TooManyRedirects
 )
 
-from acme.config import acme_logger
+from acme.config import acme_logger, Http01
 from acme.db import (
     ChallengeEntity,
     ChallengeStatus,
@@ -23,15 +23,15 @@ from acme.db import (
 class Http01Validator:
     """Validator for HTTP-01 ACME challenges."""
 
-    def __init__(self, controller, challenge: ChallengeEntity, port: int = 80, follow_redirect: bool = True, timeout_seconds: int = 2, retries: int = 1, retry_delay_seconds: float = 5):
+    def __init__(self, controller, challenge: ChallengeEntity, config: Http01):
         self.controller = controller
         self.challenge = challenge
 
-        self.port = port
-        self.follow_redirect = follow_redirect
-        self.timeout_seconds = timeout_seconds
-        self.retries = retries
-        self.retry_delay_seconds = retry_delay_seconds
+        self.port = config.port
+        self.follow_redirect = config.follow_redirect
+        self.timeout_seconds = config.timeout_seconds
+        self.retries = config.retries
+        self.retry_delay_seconds = config.retry_delay_seconds
 
     async def get_session(self) -> aiohttp.ClientSession:
         """Create an aiohttp session."""

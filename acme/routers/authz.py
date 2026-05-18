@@ -72,7 +72,7 @@ class AuthzRouter:
                 challenge_entity
             )
 
-            validator = Http01Validator(self.controller, challenge_entity)
+            validator = Http01Validator(self.controller, challenge_entity, self.controller.config.http01)
             background_tasks.add_task(validator.validate)
 
         return JSONResponse(
