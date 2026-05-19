@@ -21,7 +21,7 @@ from ca.asn1 import RevokedCertificates, RevokedCertificateEntry, get_ans1_time,
 from ca.config import CertificateConfig, ca_logger
 from ca.database import IssuedCertificate, CertificateEntity, VismCADatabase
 from ca.p11 import PKCS11PrivKey, PKCS11PubKey, PKCS11Client
-from vism_lib.errors import VismBreakingException
+from vism_lib.errors import VismBreakingException, VismException
 
 _revocation_reason_map = {
     "unspecified": rfc5280.CRLReason("unspecified"),
@@ -322,13 +322,26 @@ class Certificate:
     async def create(self) -> CertificateEntity:
         ca_logger.info(f"Creating certificate {self.config.name}")
 
-        if self.config.externally_managed or (self.issuer and self.issuer.config.externally_managed):
-            if self.config.certificate_pem is None or self.config.crl_pem is None:
-                raise VismBreakingException(
-                    f"Certificate {self.config.name} is externally managed or "
-                    f"signed by an externally managed certificate, but no certificate or CRL was provided in the config."
+        # Badly configured externally managed cert
+        if self.config.externally_managed and self.config.certificate_pem is None or self.config.crl_pem is None:
+            raise VismBreakingException(
+                f"Certificate {self.config.name} is externally managed"
+                f", but no certificate or CRL was provided in the config."
+            )
+
+        # Generate CSR for user and display it in logs
+        if self.issuer and self.issuer.config.externally_managed:
+            if self.db_entry.crt_der is None:
+                csr_der = await self._create_csr()
+                csr_pem = x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+                raise VismException(
+                    f"Certificate {self.config.name} needs to be manually signed "
+                    f"by the external issuer {self.issuer.config.name}."
+                    f"CSR: \n{csr_pem}"
                 )
 
+        # Add to database from config
+        if self.config.externally_managed or (self.issuer and self.issuer.config.externally_managed):
             crt_der = x509.load_pem_x509_certificate(self.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
             crl_der = x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
 
@@ -343,10 +356,10 @@ class Certificate:
                 crt_der = await self.sign_csr(csr_der, self.config.x509.days)
 
                 self.db_entry.crt_der = crt_der
-            #
-            # if self.db_entry.crl_der is None:
-            #     crl_der = await self._build_crl()
-            #     self.db_entry.crl_der = crl_der
+
+            if self.db_entry.crl_der is None:
+                crl_der = await self._build_crl()
+                self.db_entry.crl_der = crl_der
 
             return await self.save_to_db()
 
@@ -358,9 +371,9 @@ class Certificate:
 
                 await self.issuer.verify_issued_by(crt_der)
 
-            # if self.db_entry.crl_der is None:
-            #     crl_der = await self._build_crl()
-            #     self.db_entry.crl_der = crl_der
+            if self.db_entry.crl_der is None:
+                crl_der = await self._build_crl()
+                self.db_entry.crl_der = crl_der
 
             return await self.save_to_db()
 
