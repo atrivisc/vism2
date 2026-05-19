@@ -84,15 +84,24 @@ class VismCA(Controller):
 
         return cert_message
 
+    async def leader_run(self):
+        await self.s3_client.create_bucket()
+        await self.init_certificates()
+        await self.data_exchange_module.receive_csr()
+
+    async def follower_run(self):
+        await self.data_exchange_module.cleanup(full=False)
+
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
         try:
-            await self.s3_client.create_bucket()
+            resign_callback = self.async_shutdown()
+            leader_callback = self.leader_run()
+            follower_callback = self.follower_run()
+
             await self.setup_data_exchange_module()
-            await self.init_certificates()
-            await self.data_exchange_module.receive_csr()
-            await self._shutdown_event.wait()
+            await self.elect_leader_loop(resign_callback, leader_callback, follower_callback)
         except asyncio.CancelledError:
             ca_logger.info("CA shutting down.")
         except Exception as e:

@@ -6,8 +6,7 @@ import socket
 
 import aio_pika
 from aio_pika import Message
-from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
-from aio_pika.pool import Pool
+from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection, AbstractRobustChannel
 from aiormq import AMQPConnectionError
 from cachetools import TTLCache
 
@@ -30,21 +29,30 @@ class RabbitMQ(DataExchange):
     def __init__(self, *args, **kwargs):
         module_logger.debug("Initializing RabbitMQ module")
         super().__init__(*args, **kwargs)
-        self.connection_pool: Pool = Pool(self.get_connection, max_size=20)
-        self.channel_pool: Pool = Pool(self.get_channel, max_size=100)
 
         self._messages: dict[str, DataExchangeCSRMessage] = TTLCache(ttl=900, maxsize=10000)
 
-    async def get_channel(self) -> aio_pika.Channel:
-        async with self.connection_pool.acquire() as connection:
-            return await connection.channel(on_return_raises=True)
+        self._connection: AbstractRobustConnection | None = None
+        self._channel: AbstractRobustChannel | None = None
+
+    @property
+    async def channel(self):
+        if self._connection is None or self._connection.is_closed:
+            self._connection = await self.get_connection()
+
+        if self._channel is None or self._channel.is_closed:
+            self._channel = await self._connection.channel(on_return_raises=True)
+
+        return self._channel
 
     async def cleanup(self, full: bool = False):
         """Clean up RabbitMQ resources."""
         module_logger.debug("Cleaning up RabbitMQ")
         if full:
-            await asyncio.shield(self.channel_pool.close())
-            await asyncio.shield(self.connection_pool.close())
+            if self._channel is not None and not self._channel.is_closed:
+                await asyncio.shield(self._channel.close())
+            if self._connection is not None and not self._connection.is_closed:
+                await asyncio.shield(self._connection.close())
 
     async def send_message(
         self, message: DataExchangeMessage, exchange: str,
@@ -61,29 +69,29 @@ class RabbitMQ(DataExchange):
         if isinstance(message, DataExchangeCSRMessage):
             self._messages[message_signature] = message
 
-        async with self.channel_pool.acquire() as channel:
-            if not channel.is_initialized:
-                await channel.initialize(timeout=30)
+        channel = await self.channel
+        if not channel.is_initialized:
+            await channel.initialize(timeout=30)
 
-            exchange_obj = await channel.get_exchange(exchange)
+        exchange_obj = await channel.get_exchange(exchange)
 
-            rabbitmq_message: Message = Message(
-                body=data_json,
-                headers={
-                    "X-Vism-Message-Type": message_type,
-                    "X-Vism-Signature": message_signature,
-                    "Content-Type": "application/octet-stream",
-                }
+        rabbitmq_message: Message = Message(
+            body=data_json,
+            headers={
+                "X-Vism-Message-Type": message_type,
+                "X-Vism-Signature": message_signature,
+                "Content-Type": "application/octet-stream",
+            }
+        )
+
+        try:
+            await exchange_obj.publish(
+                message=rabbitmq_message,
+                routing_key=routing_key,
             )
-
-            try:
-                await exchange_obj.publish(
-                    message=rabbitmq_message,
-                    routing_key=routing_key,
-                )
-            except Exception as e:
-                module_logger.error(f"Failed to publish message: {e}")
-                raise RuntimeError from e
+        except Exception as e:
+            module_logger.error(f"Failed to publish message: {e}")
+            raise RuntimeError from e
 
     async def send_cert(self, message: DataExchangeCertMessage):
         """Send certificate message."""
@@ -99,26 +107,26 @@ class RabbitMQ(DataExchange):
             "Starting listening for messages from RabbitMQ queue '%s'",
             self.config.cert_queue
         )
-        async with self.channel_pool.acquire() as channel:
-            if not channel.is_initialized:
-                await channel.initialize(timeout=30)
+        channel = await self.channel
+        if not channel.is_initialized:
+            await channel.initialize(timeout=30)
 
-            await channel.set_qos(prefetch_count=1)
-            queue = await channel.declare_queue(
-                name=self.config.cert_queue,
-                passive=True,
-                durable=True,
-                robust=True,
-            )
+        await channel.set_qos(prefetch_count=1)
+        queue = await channel.declare_queue(
+            name=self.config.cert_queue,
+            passive=True,
+            durable=True,
+            robust=True,
+        )
 
-            try:
-                consumer_tag = socket.gethostname()
-                await queue.consume(self.handle_message, consumer_tag=consumer_tag)
-            except AMQPConnectionError:
-                if retry_count >= self.config.max_retries:
-                    raise
-                await asyncio.sleep(self.config.retry_delay_seconds)
-                return await self.receive_cert(retry_count=retry_count + 1)
+        try:
+            consumer_tag = socket.gethostname()
+            await queue.consume(self.handle_message, consumer_tag=consumer_tag)
+        except AMQPConnectionError:
+            if retry_count >= self.config.max_retries:
+                raise
+            await asyncio.sleep(self.config.retry_delay_seconds)
+            return await self.receive_cert(retry_count=retry_count + 1)
 
     async def receive_csr(self, *, retry_count: int = 0):
         """Receive CSR messages from queue."""
@@ -126,26 +134,26 @@ class RabbitMQ(DataExchange):
             "Starting listening for messages from RabbitMQ queue '%s'",
             self.config.csr_queue
         )
-        async with self.channel_pool.acquire() as channel:
-            if not channel.is_initialized:
-                await channel.initialize(timeout=30)
+        channel = await self.channel
+        if not channel.is_initialized:
+            await channel.initialize(timeout=30)
 
-            await channel.set_qos(prefetch_count=1)
-            queue = await channel.declare_queue(
-                name=self.config.csr_queue,
-                passive=True,
-                durable=True,
-                robust=True,
-            )
+        await channel.set_qos(prefetch_count=1)
+        queue = await channel.declare_queue(
+            name=self.config.csr_queue,
+            passive=True,
+            durable=True,
+            robust=True,
+        )
 
-            try:
-                consumer_tag = socket.gethostname()
-                await queue.consume(self.handle_message, consumer_tag=consumer_tag)
-            except AMQPConnectionError as e:
-                if retry_count >= self.config.max_retries:
-                    raise e
-                await asyncio.sleep(self.config.retry_delay_seconds)
-                return await self.receive_csr(retry_count=retry_count + 1)
+        try:
+            consumer_tag = socket.gethostname()
+            await queue.consume(self.handle_message, consumer_tag=consumer_tag)
+        except AMQPConnectionError as e:
+            if retry_count >= self.config.max_retries:
+                raise e
+            await asyncio.sleep(self.config.retry_delay_seconds)
+            return await self.receive_csr(retry_count=retry_count + 1)
 
     async def handle_message(self, message: AbstractIncomingMessage):
         """Handle incoming RabbitMQ message."""
