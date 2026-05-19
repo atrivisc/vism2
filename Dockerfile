@@ -1,11 +1,12 @@
 FROM python:3.14-alpine AS builder
 
-WORKDIR /app
+COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /bin/
 
+WORKDIR /app
 ENV CONFIG_DIR=/app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN uv pip install --no-cache --prefix=/install -r requirements.txt
 
 FROM python:3.14-alpine
 

@@ -20,10 +20,6 @@ jobs:
             dockerfile: Dockerfile
             suffix: ""
             cache_key: buildcache-alpine
-          - flavor: trixie
-            dockerfile: Dockerfile_trixie
-            suffix: "-trixie"
-            cache_key: buildcache-trixie
           - flavor: bookworm
             dockerfile: Dockerfile_bookworm
             suffix: "-bookworm"
