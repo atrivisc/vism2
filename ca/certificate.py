@@ -323,14 +323,14 @@ class Certificate:
         ca_logger.info(f"Creating certificate {self.config.name}")
 
         # Badly configured externally managed cert
-        if self.config.externally_managed and self.config.certificate_pem is None or self.config.crl_pem is None:
+        if self.config.externally_managed and (self.config.certificate_pem is None or self.config.crl_pem is None):
             raise VismBreakingException(
                 f"Certificate {self.config.name} is externally managed"
                 f", but no certificate or CRL was provided in the config."
             )
 
         # Generate CSR for user and display it in logs
-        if self.issuer and self.issuer.config.externally_managed:
+        if self.issuer and self.issuer.config.externally_managed and not self.config.externally_managed:
             if self.db_entry.crt_der is None:
                 csr_der = await self._create_csr()
                 csr_pem = x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
