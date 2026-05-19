@@ -90,7 +90,12 @@ class VismCA(Controller):
         await self.data_exchange_module.receive_csr()
 
     async def follower_run(self):
-        await self.data_exchange_module.cleanup(full=False)
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=False)
+
+    async def async_shutdown(self):
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=False)
 
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
@@ -108,7 +113,8 @@ class VismCA(Controller):
             ca_logger.critical(f"CA encountered a fatal error: {e}")
             raise e
         finally:
-            await self.data_exchange_module.cleanup(full=True)
+            if self.data_exchange_module is not None:
+                await self.data_exchange_module.cleanup(full=True)
 
     async def init_certificates(self):
         ca_logger.info("Initializing certificates")
