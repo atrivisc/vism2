@@ -101,9 +101,9 @@ class VismCA(Controller):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
         try:
-            resign_callback = self.async_shutdown()
-            leader_callback = self.leader_run()
-            follower_callback = self.follower_run()
+            resign_callback = self.async_shutdown
+            leader_callback = self.leader_run
+            follower_callback = self.follower_run
 
             await self.setup_data_exchange_module()
             await self.elect_leader_loop(resign_callback, leader_callback, follower_callback)
