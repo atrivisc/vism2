@@ -331,7 +331,12 @@ class Certificate:
 
         # Generate CSR for user and display it in logs
         if self.issuer and self.issuer.config.externally_managed and not self.config.externally_managed:
-            if self.db_entry.crt_der is None:
+            if self.config.certificate_pem and self.db_entry.crt_der is None:
+                crt_der = x509.load_pem_x509_certificate(self.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+                self.db_entry.crt_der = crt_der
+                await self.save_to_db()
+
+            elif self.db_entry.crt_der is None and self.config.certificate_pem is None:
                 csr_der = await self._create_csr()
                 csr_pem = x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
                 raise VismException(
@@ -341,7 +346,7 @@ class Certificate:
                 )
 
         # Add to database from config
-        if self.config.externally_managed or (self.issuer and self.issuer.config.externally_managed):
+        if self.config.externally_managed:
             crt_der = x509.load_pem_x509_certificate(self.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
             crl_der = x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
 
