@@ -70,14 +70,14 @@ class VismACMEController(Controller):
         if len(certs) > 2:
             await self._verify_cert_chain(certs[1:])
 
-    async def handle_chain_from_ca(self, cert_message: DataExchangeCertMessage):
+    async def handle_chain_from_ca(self, message: DataExchangeCertMessage):
         """Handle certificate chain received from CA."""
-        order = await self._get_order_for_csr(cert_message.order_id)
+        order = await self._get_order_for_csr(message.order_id)
         if order is None:
             return None
 
         try:
-            certificates = x509.load_pem_x509_certificates(cert_message.chain.encode("utf-8"))
+            certificates = x509.load_pem_x509_certificates(message.chain.encode("utf-8"))
         except ValueError as exc:
             error = ErrorEntity(
                 type="invalidOrder",
@@ -96,7 +96,7 @@ class VismACMEController(Controller):
             order.set_error(ErrorEntity(
                 type="invalidOrder",
                 title="Failed to validate CA csr response",
-                detail=f"Failed to verify certificate for order {cert_message.order_id}: {exc}"
+                detail=f"Failed to verify certificate for order {message.order_id}: {exc}"
             ))
             self.database.save_to_db(order)
             raise VismException(order.error.detail) from exc
@@ -129,9 +129,9 @@ class VismACMEController(Controller):
             self.database.save_to_db(order)
             raise VismException(order.error.detail)
 
-        acme_logger.info("Certificate for order %s accepted.", cert_message.order_id)
+        acme_logger.info("Certificate for order %s accepted.", message.order_id)
         order.status = OrderStatus.VALID
-        order.crt_pem = cert_message.chain
+        order.crt_pem = message.chain
         self.database.save_to_db(order)
         return None
 
