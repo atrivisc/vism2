@@ -40,7 +40,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
 
     name: str
     ca: str
-    ca_pem: str
     days: int
     module_args: dict = None
     enabled: bool = True
@@ -78,16 +77,15 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                 detail=str(exc)
             ) from exc
 
-        if isinstance(csr.public_key(), rsa.RSAPublicKey):
-            if csr.public_key().key_size < 2048:
-                raise ACMEProblemResponse(
-                    error_type="badCSR",
-                    title="RSA key too small.",
-                    detail=(
-                        f"RSA key size must be at least 2048 bits, "
-                        f"got {csr.public_key().key_size}"
-                    )
+        if isinstance(csr.public_key(), rsa.RSAPublicKey) and csr.public_key().key_size < 2048:
+            raise ACMEProblemResponse(
+                error_type="badCSR",
+                title="RSA key too small.",
+                detail=(
+                    f"RSA key size must be at least 2048 bits, "
+                    f"got {csr.public_key().key_size}"
                 )
+            )
 
         if not csr.is_signature_valid:
             raise ACMEProblemResponse(
@@ -185,7 +183,8 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                     )
                 )
 
-    def _validate_csr_basic_constraint(self, ext: Extension):
+    @staticmethod
+    def _validate_csr_basic_constraint(ext: Extension):
         if ext.value.ca:
             raise ACMEProblemResponse(
                 error_type="badCSR",
@@ -231,8 +230,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                 title="Domain exists but has no IPs",
             )
 
-        # TODO: FIX ME PLS!
-        pre_validated = self._client_is_valid(client_ip, domain)
         client_allowed = self._client_is_allowed(client_ip, domain)
         client_in_cluster = self._client_in_cluster(client_ip)
 
@@ -253,20 +250,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                     f"'{self.cluster}'"
                 ),
             )
-
-        # if (not pre_validated and not client_allowed and
-        #         client_ip not in domain_ips and not client_in_cluster):
-        #     raise ACMEProblemResponse(
-        #         error_type="unauthorized",
-        #         title=(
-        #             f"Client IP '{client_ip}' has not authority over "
-        #             f"'{domain}'"
-        #         ),
-        #         detail=(
-        #             f"Pre-validated: {pre_validated}, "
-        #             f"Client Allowed: {client_allowed}"
-        #         ),
-        #     )
 
     def to_dict(self):
         """Convert profile to dictionary."""
@@ -303,7 +286,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
         return v
 
     def _client_is_valid(self, client_ip: str, domain: str) -> bool:
-        """Check if client is pre-validated for a domain."""
         if not self.pre_validated:
             return False
 
@@ -313,81 +295,46 @@ class Profile:  # pylint: disable=too-many-instance-attributes
 
         return False
 
-    def _client_in_cluster(
-            self,
-            client_ip: str
-    ) -> bool | ACMEProblemResponse:
-        """Check if client is in the cluster."""
+    @staticmethod
+    def _resolve_client_hostnames(client_ip: str) -> list[str] | ACMEProblemResponse:
+        client_hostnames = []
+        try:
+            host_by_addr = socket.gethostbyaddr(client_ip)
+            client_hostnames.append(host_by_addr[0])
+            client_hostnames += host_by_addr[1]
+        except socket.herror:
+            pass  # No PTR, so we skip
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            return ACMEProblemResponse(
+                error_type="serverInternal",
+                title="Unknown error occurred while validating domain",
+                detail=str(exc)
+            )
+        return client_hostnames
+
+    def _client_in_allowlist(self, client_ip: str, allowlist: list[str]) -> bool | ACMEProblemResponse:
+        client_hostnames = self._resolve_client_hostnames(client_ip)
+        if isinstance(client_hostnames, ACMEProblemResponse):
+            return client_hostnames
+
+        subnets = [subnet for subnet in allowlist if is_valid_subnet(subnet)]
+        client_ip_in_subnets = any(client_ip in subnet for subnet in subnets)
+
+        return bool(set(client_hostnames) & set(allowlist)) or client_ip in allowlist or client_ip_in_subnets
+
+    def _client_in_cluster(self, client_ip: str) -> bool | ACMEProblemResponse:
         if not self.cluster:
             return False
 
-        client_hostnames = []
-        try:
-            host_by_addr = socket.gethostbyaddr(client_ip)
-            client_hostnames.append(host_by_addr[0])
-            client_hostnames += host_by_addr[1]
-        except socket.herror:
-            pass  # No PTR so we skip
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            return ACMEProblemResponse(
-                error_type="serverInternal",
-                title="Unknown error occurred while validating domain",
-                detail=str(exc)
-            )
+        return self._client_in_allowlist(client_ip, self.cluster)
 
-        subnets = [
-            subnet for subnet in self.cluster if is_valid_subnet(subnet)
-        ]
-        client_ip_in_subnets = False
-        for subnet in subnets:
-            if client_ip in subnet:
-                client_ip_in_subnets = True
-                break
+    def _client_in_dv(self, client_ip: str, domain: DomainValidation) -> bool | ACMEProblemResponse:
+        if domain.clients == ["*"]:
+            return True
 
-        return (set(client_hostnames) & set(self.cluster) or
-                client_ip in self.cluster or
-                client_ip_in_subnets)
+        return self._client_in_allowlist(client_ip, domain.clients)
 
-    def _client_in_dv(
-            self,
-            client_ip: str,
-            domain: DomainValidation
-    ) -> bool | ACMEProblemResponse:
-        """Check if client is in domain validation list."""
-        client_hostnames = []
-        try:
-            host_by_addr = socket.gethostbyaddr(client_ip)
-            client_hostnames.append(host_by_addr[0])
-            client_hostnames += host_by_addr[1]
-        except socket.herror:
-            pass  # No PTR so we skip
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            return ACMEProblemResponse(
-                error_type="serverInternal",
-                title="Unknown error occurred while validating domain",
-                detail=str(exc)
-            )
-
-        subnets = [
-            subnet for subnet in domain.clients if is_valid_subnet(subnet)
-        ]
-        client_ip_in_subnets = False
-        for subnet in subnets:
-            if client_ip in subnet:
-                client_ip_in_subnets = True
-                break
-
-        return (set(client_hostnames) & set(domain.clients) or
-                domain.clients == ["*"] or
-                client_ip in domain.clients or
-                client_ip_in_subnets)
-
-    def _client_is_allowed(
-            self,
-            client_ip: str,
-            domain: str
-    ) -> bool | ACMEProblemResponse:
-        """Check if client is allowed for a domain via ACL."""
+    def _client_is_allowed(self, client_ip: str, domain: str) -> bool | ACMEProblemResponse:
         if not self.acl:
             return False
 
@@ -495,9 +442,7 @@ class AcmeConfig(VismConfig):
         if not name:
             return self.default_profile
 
-        profiles = list(
-            filter(lambda profile: profile.name == name, self.profiles)
-        )
+        profiles = list(filter(lambda p: p.name == name, self.profiles))
         if len(profiles) == 0:
             raise ACMEProblemResponse(
                 error_type="invalidProfile",

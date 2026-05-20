@@ -1,14 +1,13 @@
 """RabbitMQ module for secure message exchange in VISM."""
 
 import asyncio
-import json
 import socket
+from typing import Callable, Awaitable
 
 import aio_pika
 from aio_pika import Message
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection, AbstractRobustChannel
 from aiormq import AMQPConnectionError
-from cachetools import TTLCache
 
 from modules import module_logger
 from modules.rabbitmq.config import RabbitMQConfig
@@ -20,6 +19,21 @@ from vism_lib.data.exchange import (
     DataExchangeCertMessage
 )
 
+type AsyncCallableExchange = Callable[[DataExchangeMessage], Awaitable]
+type AsyncCallableExchangeCSR = Callable[[DataExchangeCSRMessage], Awaitable]
+type AsyncCallableExchangeCert = Callable[[DataExchangeCertMessage], Awaitable]
+
+
+def callback_decorator(next_func):
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            await func(*args, **kwargs)
+            return await next_func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
 
 class RabbitMQ(DataExchange):
     """RabbitMQ implementation of DataExchange."""
@@ -29,8 +43,6 @@ class RabbitMQ(DataExchange):
     def __init__(self, *args, **kwargs):
         module_logger.debug("Initializing RabbitMQ module")
         super().__init__(*args, **kwargs)
-
-        self._messages: dict[str, DataExchangeCSRMessage] = TTLCache(ttl=900, maxsize=10000)
 
         self._connection: AbstractRobustConnection | None = None
         self._channel: AbstractRobustChannel | None = None
@@ -54,26 +66,17 @@ class RabbitMQ(DataExchange):
             if self._connection is not None and not self._connection.is_closed:
                 await asyncio.shield(self._connection.close())
 
-    async def send_message(
-        self, message: DataExchangeMessage, exchange: str,
-        message_type: str, routing_key: str
-    ):
-        """Send data to RabbitMQ exchange."""
-        module_logger.info(
-            "Sending message to RabbitMQ exchange '%s'", exchange
-        )
+    async def send_message(self, message: DataExchangeMessage, exchange_name: str, message_type: str, routing_key: str = ""):
+        module_logger.info("Sending message to RabbitMQ exchange '%s'", exchange_name)
 
         data_json = message.to_json().encode("utf-8")
         message_signature = self.validation_module.sign(data_json)
-
-        if isinstance(message, DataExchangeCSRMessage):
-            self._messages[message_signature] = message
 
         channel = await self.channel
         if not channel.is_initialized:
             await channel.initialize(timeout=30)
 
-        exchange_obj = await channel.get_exchange(exchange)
+        exchange = await channel.get_exchange(exchange_name)
 
         rabbitmq_message: Message = Message(
             body=data_json,
@@ -85,27 +88,21 @@ class RabbitMQ(DataExchange):
         )
 
         try:
-            await exchange_obj.publish(
-                message=rabbitmq_message,
-                routing_key=routing_key,
-            )
+            await exchange.publish(message=rabbitmq_message, routing_key=routing_key)
         except Exception as e:
             module_logger.error(f"Failed to publish message: {e}")
             raise RuntimeError from e
 
     async def send_cert(self, message: DataExchangeCertMessage):
-        """Send certificate message."""
-        await self.send_message(message, self.config.cert_exchange, "cert", "cert")
+        await self.send_message(message, self.config.cert_exchange, "cert")
 
     async def send_csr(self, message: DataExchangeCSRMessage):
-        """Send CSR message."""
-        await self.send_message(message, self.config.csr_exchange, "csr", "csr")
+        await self.send_message(message, self.config.csr_exchange, "csr")
 
-    async def receive_cert(self, *, retry_count: int = 0):
-        """Receive certificate messages from queue."""
+    async def _consume(self, *, queue, retry_count: int = 0, callback: AsyncCallableExchangeCSR | AsyncCallableExchangeCert):
         module_logger.info(
             "Starting listening for messages from RabbitMQ queue '%s'",
-            self.config.cert_queue
+            queue
         )
         channel = await self.channel
         if not channel.is_initialized:
@@ -113,7 +110,7 @@ class RabbitMQ(DataExchange):
 
         await channel.set_qos(prefetch_count=1)
         queue = await channel.declare_queue(
-            name=self.config.cert_queue,
+            name=queue,
             passive=True,
             durable=True,
             robust=True,
@@ -121,42 +118,22 @@ class RabbitMQ(DataExchange):
 
         try:
             consumer_tag = socket.gethostname()
-            await queue.consume(self.handle_message, consumer_tag=consumer_tag)
+            decorated_callback = callback_decorator(self.handle_message)(callback)
+            await queue.consume(decorated_callback, consumer_tag=consumer_tag)
         except AMQPConnectionError:
             if retry_count >= self.config.max_retries:
                 raise
             await asyncio.sleep(self.config.retry_delay_seconds)
-            return await self.receive_cert(retry_count=retry_count + 1)
+            return await self.receive_cert(retry_count=retry_count + 1, callback=callback)
 
-    async def receive_csr(self, *, retry_count: int = 0):
-        """Receive CSR messages from queue."""
-        module_logger.info(
-            "Starting listening for messages from RabbitMQ queue '%s'",
-            self.config.csr_queue
-        )
-        channel = await self.channel
-        if not channel.is_initialized:
-            await channel.initialize(timeout=30)
 
-        await channel.set_qos(prefetch_count=1)
-        queue = await channel.declare_queue(
-            name=self.config.csr_queue,
-            passive=True,
-            durable=True,
-            robust=True,
-        )
+    async def receive_cert(self, *, retry_count: int = 0, callback: AsyncCallableExchangeCert) -> None:
+        await self._consume(queue=self.config.cert_queue, retry_count=retry_count, callback=callback)
 
-        try:
-            consumer_tag = socket.gethostname()
-            await queue.consume(self.handle_message, consumer_tag=consumer_tag)
-        except AMQPConnectionError as e:
-            if retry_count >= self.config.max_retries:
-                raise e
-            await asyncio.sleep(self.config.retry_delay_seconds)
-            return await self.receive_csr(retry_count=retry_count + 1)
+    async def receive_csr(self, *, retry_count: int = 0, callback: AsyncCallableExchangeCSR) -> None:
+        await self._consume(queue=self.config.csr_queue, retry_count=retry_count, callback=callback)
 
     async def handle_message(self, message: AbstractIncomingMessage):
-        """Handle incoming RabbitMQ message."""
         module_logger.info("Received message from RabbitMQ.")
         async with message.process():
             message_type = message.headers.get("X-Vism-Message-Type", None)
@@ -169,14 +146,6 @@ class RabbitMQ(DataExchange):
 
             if not self.validation_module.verify(message.body, message.headers["X-Vism-Signature"]):
                 raise RabbitMQError('Invalid signature')
-
-            if message.headers["X-Vism-Message-Type"] == "csr":
-                response = await self.controller.handle_csr_from_acme(message)
-                await self.send_cert(response)
-            elif message.headers["X-Vism-Message-Type"] == "cert":
-                cert_message = DataExchangeCertMessage(**json.loads(message.body))
-                csr_message = self._messages.pop(cert_message.original_signature)
-                await self.controller.handle_chain_from_ca(cert_message, csr_message)
 
             return None
 

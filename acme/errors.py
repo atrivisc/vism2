@@ -10,7 +10,6 @@ from acme.db import OrderEntity
 from vism_lib.errors import VismException
 
 
-@dataclass
 class ACMEProblemResponse(Exception):
     """
     ACME Problem Response exception.
@@ -18,12 +17,12 @@ class ACMEProblemResponse(Exception):
     Represents an RFC 8555 compliant ACME problem detail response.
     """
 
-    error_type: str
-    title: str
-    detail: str = None
-    subproblems: list['ACMEProblemResponse'] = None
-    status_code: int = 400
-    error_json: dict[str, Any] = None
+    def __init__(self, error_type: str, title: str, detail: str = None, subproblems: list['ACMEProblemResponse'] = None, status_code: int = 400):
+        self.error_type = error_type
+        self.title = title
+        self.detail = detail
+        self.subproblems = subproblems
+        self.status_code = status_code
 
     def __post_init__(self):
         """Compile error JSON and init exception."""

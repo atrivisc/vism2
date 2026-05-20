@@ -15,7 +15,7 @@ from acme.errors import ACMEProblemResponse
 from acme.middleware import AcmeAccountMiddleware, JWSMiddleware
 from acme.nonce import NonceManager
 from vism_lib.controller import Controller
-from vism_lib.data.exchange import DataExchangeCertMessage, DataExchangeCSRMessage
+from vism_lib.data.exchange import DataExchangeCertMessage
 from vism_lib.errors import VismException
 
 
@@ -62,7 +62,15 @@ class VismACMEController(Controller):
 
         return order
 
-    async def handle_chain_from_ca(self, cert_message: DataExchangeCertMessage, csr_message: DataExchangeCSRMessage):
+    async def _verify_cert_chain(self, certs: list[x509.Certificate]) -> None:
+        if len(certs) < 2:
+            return
+
+        certs[0].verify_directly_issued_by(certs[1])
+        if len(certs) > 2:
+            await self._verify_cert_chain(certs[1:])
+
+    async def handle_chain_from_ca(self, cert_message: DataExchangeCertMessage):
         """Handle certificate chain received from CA."""
         order = await self._get_order_for_csr(cert_message.order_id)
         if order is None:
@@ -82,25 +90,8 @@ class VismACMEController(Controller):
                 f"Failed to load certificates from chain: {exc}"
             ) from exc
 
-        ca_profile = self.config.get_profile_by_name(csr_message.profile_name)
-        if ca_profile is None:
-            raise VismException(f"CA profile {csr_message.profile_name} not found")
-
         try:
-            issuer_x509 = x509.load_pem_x509_certificate(ca_profile.ca_pem.encode("utf-8"))
-        except ValueError as exc:
-            order.set_error(ErrorEntity(
-                type="invalidOrder",
-                title="Failed to validate CA csr response",
-                detail=f"Failed to load {cert_message.ca_name} certificate: {exc}"
-            ))
-            self.database.save_to_db(order)
-            raise VismException(order.error.detail) from exc
-
-        ordered_cert = certificates[0]
-
-        try:
-            ordered_cert.verify_directly_issued_by(issuer_x509)
+            await self._verify_cert_chain(certificates)
         except (ValueError, TypeError, InvalidSignature) as exc:
             order.set_error(ErrorEntity(
                 type="invalidOrder",
@@ -121,6 +112,7 @@ class VismACMEController(Controller):
             self.database.save_to_db(order)
             raise VismException from exc
 
+        ordered_cert = certificates[0]
         cert_san = ordered_cert.extensions.get_extension_for_oid(x509.OID_SUBJECT_ALTERNATIVE_NAME)
         csr_san = csr.extensions.get_extension_for_oid(x509.OID_SUBJECT_ALTERNATIVE_NAME)
 
@@ -147,7 +139,7 @@ class VismACMEController(Controller):
     async def lifespan(self, _api: FastAPI):
         """Manage application lifespan with an async context manager."""
         await self.setup_data_exchange_module()
-        asyncio.create_task(self.data_exchange_module.receive_cert())
+        asyncio.create_task(self.data_exchange_module.receive_cert(callback=self.handle_chain_from_ca))
         yield
         await asyncio.shield(self.data_exchange_module.cleanup(full=True))
 

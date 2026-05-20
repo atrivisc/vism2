@@ -1,10 +1,8 @@
 """Main Vism CA class and entrypoint."""
 
 import asyncio
-import json
 from datetime import timezone, datetime
 
-from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
@@ -64,30 +62,27 @@ class VismCA(Controller):
         self.database.save_to_db(issued_certificate)
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
-    async def handle_csr_from_acme(self, message: AbstractIncomingMessage) -> DataExchangeCertMessage:
-        csr_message = DataExchangeCSRMessage(**json.loads(message.body))
-        csr_der_bytes = x509.load_pem_x509_csr(csr_message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+    async def handle_csr_from_acme(self, message: DataExchangeCSRMessage) -> None:
+        csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
 
-        issuer = self.certificates[csr_message.ca_name]
-        signed_cert_der = await issuer.sign_csr(csr_der_bytes, csr_message.days)
+        issuer = self.certificates[message.ca_name]
+        signed_cert_der = await issuer.sign_csr(csr_der_bytes, message.days)
         signed_cert_pem = x509.load_der_x509_certificate(signed_cert_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
-
         chain = signed_cert_pem + '\n' + issuer.pem_chain
 
         cert_message = DataExchangeCertMessage(
             chain=chain,
-            order_id=csr_message.order_id,
-            ca_name=csr_message.ca_name,
-            days=csr_message.days,
-            original_signature=message.headers["X-Vism-Signature"],
+            order_id=message.order_id,
+            ca_name=message.ca_name,
+            days=message.days,
         )
 
-        return cert_message
+        return await self.data_exchange_module.send_cert(cert_message)
 
     async def leader_run(self):
         await self.s3_client.create_bucket()
         await self.init_certificates()
-        await self.data_exchange_module.receive_csr()
+        await self.data_exchange_module.receive_csr(callback=self.handle_csr_from_acme)
 
     async def follower_run(self):
         if self.data_exchange_module is not None:
