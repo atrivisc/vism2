@@ -221,10 +221,13 @@ class Certificate:
                 for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
                     extensions.append(ext)
 
+        # Not the most elegant, but it solves the problem of someone changing the config
+        issuer_cert = der_decoder(self.issuer.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        tbs_cert["issuer"] = issuer_cert["tbsCertificate"]["subject"]
+
         tbs_cert["version"] = self.CERT_VERSION
         tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(random.getrandbits(159))
         tbs_cert["signature"] = signature_algorithm
-        tbs_cert["issuer"] = self.config.x509.subject_name.to_asn1()
         tbs_cert["validity"] = validity
         tbs_cert["subject"] = csr_info.getComponentByName("subject")
         tbs_cert["subjectPublicKeyInfo"] = csr_info.getComponentByName("subjectPKInfo")
