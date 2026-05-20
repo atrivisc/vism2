@@ -12,11 +12,35 @@ from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBi
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
 from vism_lib.database import Base, VismDatabase
-from vism_lib.errors import VismException, VismBreakingException
+from vism_lib.errors import VismBreakingException
 
 
 class ModuleData:
     """Base class for module-specific data storage."""
+
+
+class CertificateEntity(Base):
+    """Database entity representing a certificate."""
+
+    __tablename__ = 'certificate'
+
+    name: Mapped[str] = mapped_column(String(256))
+    externally_managed: Mapped[bool] = mapped_column(Boolean)
+    crl_number: Mapped[int] = mapped_column(Integer, default=1)
+
+    crt_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
+    crl_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
+
+    def to_dict(self):
+        """Convert entity to dictionary representation."""
+        return {
+            "name": self.name,
+            "externally_managed": self.externally_managed,
+            "crl_number": self.crl_number,
+            "crt_der": self.crt_der.hex() if self.crt_der else None,
+            "crl_der": self.crl_der.hex() if self.crl_der else None,
+        }
+
 
 class IssuedCertificate(Base):
     """Database entity representing an issued certificate."""
@@ -43,28 +67,6 @@ class IssuedCertificate(Base):
             "subject": self.subject.hex(),
             "ca_id": str(self.ca_id),
             "revocation_date": self.revocation_date.hex() if self.revocation_date else None,
-        }
-
-class CertificateEntity(Base):
-    """Database entity representing a certificate."""
-
-    __tablename__ = 'certificate'
-
-    name: Mapped[str] = mapped_column(String(256))
-    externally_managed: Mapped[bool] = mapped_column(Boolean)
-    crl_number: Mapped[int] = mapped_column(Integer, default=1)
-
-    crt_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
-    crl_der: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True, default=None)
-
-    def to_dict(self):
-        """Convert entity to dictionary representation."""
-        return {
-            "name": self.name,
-            "externally_managed": self.externally_managed,
-            "crl_number": self.crl_number,
-            "crt_der": self.crt_der.hex() if self.crt_der else None,
-            "crl_der": self.crl_der.hex() if self.crl_der else None,
         }
 
 class VismCADatabase(VismDatabase):

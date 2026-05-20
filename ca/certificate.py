@@ -94,7 +94,10 @@ class Certificate:
         algorithm_identifier = rfc5280.AlgorithmIdentifier()
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
             if self.p11_client.is_pss_supported:
-                algorithm_identifier = _rsa_pss_map[hash_algorithm_name.upper()]
+                algorithm_identifier = der_decoder(
+                    der_encoder(_rsa_pss_map[hash_algorithm_name.upper()]),
+                    asn1Spec=rfc5280.AlgorithmIdentifier()
+                )[0]
                 algorithm_identifier['parameters']['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
                 return algorithm_identifier
             else:
@@ -247,7 +250,7 @@ class Certificate:
         tbs_crl = rfc5280.TBSCertList()
 
         signature_algorithm = rfc5280.AlgorithmIdentifier()
-        signature_algorithm["algorithm"] = univ.ObjectIdentifier(self._get_algorithm_identifier(self.CRL_SIGN_HASH_ALG))
+        signature_algorithm["algorithm"] = self._get_algorithm_identifier(self.CRL_SIGN_HASH_ALG)
 
         revoked_certificates = RevokedCertificates()
         issued_certificates = self.database.get_issued_certificate(self.db_entry.id)
