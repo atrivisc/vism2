@@ -94,21 +94,24 @@ class Certificate:
         algorithm_identifier = rfc5280.AlgorithmIdentifier()
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
             if self.p11_client.is_pss_supported:
-                algorithm_identifier = der_decoder(
-                    der_encoder(_rsa_pss_map[hash_algorithm_name.upper()]),
-                    asn1Spec=rfc5280.AlgorithmIdentifier()
-                )[0]
-                algorithm_identifier['parameters']['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
+                template = _rsa_pss_map[hash_algorithm_name.upper()]
+
+                params_der = der_encoder(template['parameters'])
+                pss_params, _ = der_decoder(params_der, asn1Spec=rfc4055.RSASSA_PSS_params())
+                pss_params['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
+
+                algorithm_identifier['algorithm'] = template['algorithm']
+                algorithm_identifier['parameters'] = univ.Any(der_encoder(pss_params))
                 return algorithm_identifier
             else:
-                algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{hash_algorithm_name}').dotted_string
+                algorithm_oid = SignatureAlgorithmOID().__getattribute__(
+                    f'RSA_WITH_{hash_algorithm_name}').dotted_string
         elif self.priv_key.key_type == pkcs11.KeyType.EC:
             algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'ECDSA_WITH_{hash_algorithm_name}').dotted_string
         else:
             raise NotImplementedError
 
         algorithm_identifier["algorithm"] = univ.ObjectIdentifier(algorithm_oid)
-
         return algorithm_identifier
 
     async def _sign_object(self, obj: Asn1Item, hash_algorithm_name: str) -> tuple[rfc5280.AlgorithmIdentifier, univ.BitString]:
