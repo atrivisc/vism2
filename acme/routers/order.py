@@ -2,7 +2,7 @@
 
 import secrets
 from typing import Any
-
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
@@ -49,8 +49,21 @@ class OrderRouter:
                 status_code=403
             )
 
+        ca_profile = self.controller.config.get_profile_by_name(str(order.profile_name))
+        chain = order.crt_pem
+
+        if not ca_profile.include_root_in_chain:
+            certificates = x509.load_pem_x509_certificates(str(chain).encode("utf-8"))
+            true_chain_certs = [cert for cert in certificates if cert.issuer != cert.subject]
+            true_chain = b"".join(
+                cert.public_bytes(serialization.Encoding.PEM)
+                for cert in true_chain_certs
+            ).decode("utf-8")
+        else:
+            true_chain = chain
+
         return Response(
-            content=order.crt_pem,
+            content=true_chain,
             headers={
                 "Content-Type": "application/pem-certificate-chain",
             },
@@ -89,7 +102,7 @@ class OrderRouter:
         )
         domains = [authz.identifier_value for authz in order_authz_entities]
 
-        profile = self.controller.config.get_profile_by_name(order.profile_name)
+        profile = self.controller.config.get_profile_by_name(str(order.profile_name))
         csr = profile.validate_csr(csr_der_b64, domains)
         csr_pem = csr.public_bytes(serialization.Encoding.PEM)
 

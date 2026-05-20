@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from cryptography import x509
-from cryptography.exceptions import InvalidSignature
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
@@ -62,16 +61,7 @@ class VismACMEController(Controller):
 
         return order
 
-    async def _verify_cert_chain(self, certs: list[x509.Certificate]) -> None:
-        if len(certs) < 2:
-            return
-
-        certs[0].verify_directly_issued_by(certs[1])
-        if len(certs) > 2:
-            await self._verify_cert_chain(certs[1:])
-
     async def handle_chain_from_ca(self, message: DataExchangeCertMessage):
-        """Handle certificate chain received from CA."""
         order = await self._get_order_for_csr(message.order_id)
         if order is None:
             return None
@@ -89,17 +79,6 @@ class VismACMEController(Controller):
             raise VismException(
                 f"Failed to load certificates from chain: {exc}"
             ) from exc
-
-        try:
-            await self._verify_cert_chain(certificates)
-        except (ValueError, TypeError, InvalidSignature) as exc:
-            order.set_error(ErrorEntity(
-                type="invalidOrder",
-                title="Failed to validate CA csr response",
-                detail=f"Failed to verify certificate for order {message.order_id}: {exc}"
-            ))
-            self.database.save_to_db(order)
-            raise VismException(order.error.detail) from exc
 
         try:
             csr = x509.load_pem_x509_csr(order.csr_pem.encode("utf-8"))

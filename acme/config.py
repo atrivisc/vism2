@@ -6,7 +6,6 @@ import socket
 import logging
 from dataclasses import field
 from typing import Optional, ClassVar
-
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -41,6 +40,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
     name: str
     ca: str
     days: int
+    include_root_in_chain: bool = False
     module_args: dict = None
     enabled: bool = True
     default: bool = False
