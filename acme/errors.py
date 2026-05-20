@@ -24,8 +24,6 @@ class ACMEProblemResponse(Exception):
         self.subproblems = subproblems
         self.status_code = status_code
 
-    def __post_init__(self):
-        """Compile error JSON and init exception."""
         self.error_json: dict[str, Any] = {
             "type": f"urn:ietf:params:acme:error:{self.error_type}",
             "title": self.title,

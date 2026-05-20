@@ -18,10 +18,12 @@ class RabbitMQConfig(DataExchangeConfig): # pylint: disable=too-many-instance-at
     password: str
     vhost: str
 
-    csr_queue: str = None
-    cert_queue: str = None
-    csr_exchange: str = None
-    cert_exchange: str = None
+    csr_routing_key: str
+    cert_routing_key: str
+    csr_queue: str
+    cert_queue: str
+    csr_exchange: str
+    cert_exchange: str
 
     max_retries: int = 5
     retry_delay_seconds: int = 1

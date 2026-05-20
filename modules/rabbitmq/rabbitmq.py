@@ -94,10 +94,10 @@ class RabbitMQ(DataExchange):
             raise RuntimeError from e
 
     async def send_cert(self, message: DataExchangeCertMessage):
-        await self.send_message(message, self.config.cert_exchange, "cert")
+        await self.send_message(message, self.config.cert_exchange, "cert", self.config.cert_routing_key)
 
     async def send_csr(self, message: DataExchangeCSRMessage):
-        await self.send_message(message, self.config.csr_exchange, "csr")
+        await self.send_message(message, self.config.csr_exchange, "csr", self.config.csr_routing_key)
 
     async def _consume(self, *, queue, retry_count: int = 0, callback: AsyncCallableExchangeCSR | AsyncCallableExchangeCert):
         module_logger.info(
