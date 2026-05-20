@@ -222,7 +222,7 @@ class Certificate:
                     extensions.append(ext)
 
         # Not the most elegant, but it solves the problem of someone changing the config
-        issuer_cert = der_decoder(self.issuer.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
         tbs_cert["issuer"] = issuer_cert["tbsCertificate"]["subject"]
 
         tbs_cert["version"] = self.CERT_VERSION
@@ -255,8 +255,7 @@ class Certificate:
     async def _build_crl(self):
         tbs_crl = rfc5280.TBSCertList()
 
-        signature_algorithm = rfc5280.AlgorithmIdentifier()
-        signature_algorithm["algorithm"] = self._get_algorithm_identifier(self.CRL_SIGN_HASH_ALG)
+        signature_algorithm = self._get_algorithm_identifier(self.CRL_SIGN_HASH_ALG)
 
         revoked_certificates = RevokedCertificates()
         issued_certificates = self.database.get_issued_certificate(self.db_entry.id)
@@ -269,13 +268,12 @@ class Certificate:
                 pass
 
             try:
-                cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.UTCTime())[0]
+                cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.GeneralizedTime())[0]
             except error.PyAsn1Error:
                 pass
 
             if cert_expiry_time is None:
                 raise VismBreakingException(f"Certificate has invalid expiration date: {cert.expiration_date}")
-
 
             if cert_expiry_time.asDateTime <= datetime.now(timezone.utc):
                 cert.status_flag = "e"
@@ -289,7 +287,7 @@ class Certificate:
                 crl_entry['userCertificate'] = der_decoder(cert.serial, asn1Spec=rfc2315.SerialNumber())[0]
 
                 if cert.status_flag == "e":
-                    crl_entry['revocationDate'] = cert_expiry_time
+                    crl_entry['revocationDate'] = get_ans1_time(cert_expiry_time.asDateTime)
                 elif cert.status_flag == "r":
                     cert_revocation_time = der_decoder(cert.revocation_date, asn1Spec=rfc5280.Time())[0]
 
@@ -308,7 +306,10 @@ class Certificate:
 
         tbs_crl['version'] = self.CRL_VERSION
         tbs_crl["signature"] = signature_algorithm
-        tbs_crl["issuer"] = self.config.x509.subject_name.to_asn1()
+
+        issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        tbs_crl["issuer"] = issuer_cert["tbsCertificate"]["subject"]
+
         tbs_crl["thisUpdate"] = get_ans1_time(datetime.now(timezone.utc) - timedelta(hours=1))
         tbs_crl["nextUpdate"] = get_ans1_time(datetime.now(timezone.utc) + timedelta(days=self.config.x509.crl_days))
         tbs_crl["revokedCertificates"] = revoked_certificates
