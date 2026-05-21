@@ -294,35 +294,43 @@ class X509ConfigDistributionPointReasonFlags(enum.Enum):
     aACompromise = "aACompromise"
 
 @dataclass
+class X509ConfigDistributionPointName:
+    """X509 distribution point name configuration."""
+    name: list[str] = field(default_factory=list)
+    name_type: X509ConfigLocationType = X509ConfigLocationType.URL
+
+    def to_general_name(self) -> rfc5280.GeneralName:
+        general_name = rfc5280.GeneralName()
+        if self.name_type == X509ConfigLocationType.URL:
+            general_name.setComponentByName("uniformResourceIdentifier", char.IA5String(self.name))
+        else:
+            raise NotImplementedError(f"Location type {self.name_type} is not implemented.")
+
+        return general_name
+
+@dataclass
 class X509ConfigDistributionPoint:
     """X509 distribution point configuration."""
-    names: list[str] = field(default_factory=list)
-    names_type: X509ConfigLocationType = X509ConfigLocationType.URL
+    names: list[X509ConfigDistributionPointName] = field(default_factory=list)
     reasons: list[X509ConfigDistributionPointReasonFlags] = field(default_factory=list)
 
     def to_asn1(self):
-        if self.names_type == X509ConfigLocationType.URL:
-            name_component = "uniformResourceIdentifier"
-        else:
-            raise NotImplementedError(f"Location type {self.names_type} is not implemented.")
-
         dp = rfc5280.DistributionPoint()
 
         dp_name = rfc5280.DistributionPointName()
         names = rfc5280.GeneralNames()
 
         for name in self.names:
-            general_name = rfc5280.GeneralName()
-            general_name.setComponentByName(name_component, char.IA5String(name))
-            names.append(name)
+            names.append(name.to_general_name())
 
         dp_name.setComponentByName("fullName", names)
         dp.setComponentByName("distributionPoint", dp_name)
 
-        reasons = rfc5280.ReasonFlags(
-            "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
-        )
-        dp.setComponentByName("reasons", reasons)
+        if self.reasons:
+            reasons = rfc5280.ReasonFlags(
+                "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
+            )
+            dp.setComponentByName("reasons", reasons)
 
         return dp
 
