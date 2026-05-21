@@ -257,7 +257,7 @@ class X509ConfigAccessDescription:
         )
         access_location = rfc5280.GeneralName()
         if self.access_location_type == X509ConfigLocationType.URL:
-            access_location.setComponentByName("uniformResourceIdentifier", self.access_location)
+            access_location.setComponentByName("uniformResourceIdentifier", char.IA5String(self.access_location))
         else:
             raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
 
