@@ -19,7 +19,7 @@ class NonceEntity(Base):
     nonce: Mapped[str] = mapped_column(String(64), default_factory=_new_nonce, init=False)
 
     account_id: Mapped[UUID] = mapped_column(
-        Uuid, ForeignKey('account.id'), init=False
+        Uuid, ForeignKey('account.id'), init=False, nullable=True, default=None
     )
     account: Mapped[AccountEntity] = relationship(
         "AccountEntity", lazy="joined", default=None
