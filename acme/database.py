@@ -42,10 +42,10 @@ class VismAcmeDatabase(VismDatabase):
         return self.save_to_db(nonce_entity)
 
     def pop_nonce(self, nonce: str, account: AccountEntity | None) -> NonceEntity | None:
-        if account:
-            nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce, NonceEntity.account_id == account.id)
-        else:
-            nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce)
+        nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce)
+
+        if account and nonce_entity and nonce_entity.account is not None and nonce_entity.account.id != account.id:
+            return None
 
         if not nonce_entity:
             return None
