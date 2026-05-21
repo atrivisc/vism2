@@ -24,3 +24,10 @@ class NonceEntity(Base):
     account: Mapped[AccountEntity] = relationship(
         "AccountEntity", lazy="joined", default=None
     )
+
+    def to_dict(self):
+        nonce_dict = {"nonce": self.nonce}
+        if self.account:
+            nonce_dict["account_id"] = str(self.account_id)
+
+        return nonce_dict
