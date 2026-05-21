@@ -1,6 +1,7 @@
 """Router for ACME base operations."""
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
+from urllib3 import request
 
 from acme.acme import VismACMEController
 from acme.config import acme_logger
@@ -18,10 +19,10 @@ class BaseRouter:
         self.router.head("/new-nonce")(self._new_nonce)
         self.router.get("/new-nonce")(self._new_nonce)
 
-    async def _new_nonce(self):
+    async def _new_nonce(self, request: AcmeRequest):
         """Return new nonce."""
         acme_logger.info("Received request to create new nonce.")
-        nonce = self.controller.database.new_nonce().nonce
+        nonce = self.controller.database.new_nonce(request.state.account).nonce
         return Response(status_code=200, headers={"Replay-Nonce": nonce})
 
     async def directory(self, request: AcmeRequest):

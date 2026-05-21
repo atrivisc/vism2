@@ -34,9 +34,13 @@ class VismAcmeDatabase(VismDatabase):
 
     @staticmethod
     def new_nonce(account: AccountEntity | None = None) -> NonceEntity:
+        # A bit redundant, but it protects against potential invalid input data like an empty string
+        if not account:
+            return NonceEntity()
+
         return NonceEntity(account=account)
 
-    def pop_nonce(self, nonce: str, account: AccountEntity) -> NonceEntity | None:
+    def pop_nonce(self, nonce: str, account: AccountEntity | None) -> NonceEntity | None:
         if account:
             nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce, NonceEntity.account_id == account.id)
         else:
