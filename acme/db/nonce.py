@@ -16,7 +16,7 @@ class NonceEntity(Base):
     """Database entity representing an ACME order."""
 
     __tablename__ = 'nonce'
-    nonce: Mapped[str] = mapped_column(String(32), default_factory=_new_nonce, init=False)
+    nonce: Mapped[str] = mapped_column(String(64), default_factory=_new_nonce, init=False)
 
     account_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey('account.id'), init=False
