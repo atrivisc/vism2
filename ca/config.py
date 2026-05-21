@@ -15,7 +15,7 @@ import pkcs11
 from cryptography import x509
 from cryptography.hazmat.bindings._rust import ObjectIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
-from pyasn1.type import univ, char
+from pyasn1.type import univ, char, tag
 from pyasn1_modules import rfc5280
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
@@ -257,12 +257,12 @@ class X509ConfigAccessDescription:
         )
         access_location = rfc5280.GeneralName()
         if self.access_location_type == X509ConfigLocationType.URL:
-            access_location.setComponentByName("uniformResourceIdentifier", char.IA5String(self.access_location))
+            access_location["uniformResourceIdentifier"] = char.IA5String(self.access_location).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 6))
         else:
             raise NotImplementedError(f"Location type {self.access_location_type} is not implemented.")
 
-        access_description.setComponentByName("accessMethod", access_method)
-        access_description.setComponentByName("accessLocation", access_location)
+        access_description["accessMethod"] = access_method
+        access_description["accessLocation"] = access_location
         return access_description
 
 
@@ -302,7 +302,7 @@ class X509ConfigDistributionPointName:
     def to_general_name(self) -> rfc5280.GeneralName:
         general_name = rfc5280.GeneralName()
         if self.name_type == X509ConfigLocationType.URL:
-            general_name.setComponentByName("uniformResourceIdentifier", char.IA5String(self.name))
+            general_name["uniformResourceIdentifier"] = char.IA5String(self.name).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 6))
         else:
             raise NotImplementedError(f"Location type {self.name_type} is not implemented.")
 
@@ -317,20 +317,20 @@ class X509ConfigDistributionPoint:
     def to_asn1(self):
         dp = rfc5280.DistributionPoint()
 
-        dp_name = rfc5280.DistributionPointName()
-        names = rfc5280.GeneralNames()
+        dp_name = rfc5280.DistributionPointName().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
+        names = rfc5280.GeneralNames().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
 
         for name in self.names:
             names.append(name.to_general_name())
 
-        dp_name.setComponentByName("fullName", names)
-        dp.setComponentByName("distributionPoint", dp_name)
+        dp_name["fullName"] = names
+        dp["distributionPoint"] = dp_name
 
         if self.reasons:
             reasons = rfc5280.ReasonFlags(
                 "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
             )
-            dp.setComponentByName("reasons", reasons)
+            dp["reasons"] = reasons
 
         return dp
 
