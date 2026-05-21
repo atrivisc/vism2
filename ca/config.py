@@ -253,7 +253,7 @@ class X509ConfigAccessDescription:
     def to_ans1(self):
         access_description = rfc5280.AccessDescription()
         access_method = univ.ObjectIdentifier(
-            x509.OID_OCSP if self.access_method == X509ConfigAccessDescriptionMethod.OCSP else x509.OID_CA_ISSUERS
+            x509.OID_OCSP.dotted_string if self.access_method == X509ConfigAccessDescriptionMethod.OCSP else x509.OID_CA_ISSUERS.dotted_string
         )
         access_location = rfc5280.GeneralName()
         if self.access_location_type == X509ConfigLocationType.URL:
