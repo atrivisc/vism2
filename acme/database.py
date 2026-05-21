@@ -32,13 +32,14 @@ class VismAcmeDatabase(VismDatabase):
         except Exception as e:
             acme_logger.warning(f"Failed to cleanup nonces: {e}")
 
-    @staticmethod
-    def new_nonce(account: AccountEntity | None = None) -> NonceEntity:
+    def new_nonce(self, account: AccountEntity | None = None) -> NonceEntity:
         # A bit redundant, but it protects against potential invalid input data like an empty string
         if not account:
-            return NonceEntity()
+            nonce_entity = NonceEntity()
+        else:
+            nonce_entity = NonceEntity(account=account)
 
-        return NonceEntity(account=account)
+        return self.save_to_db(nonce_entity)
 
     def pop_nonce(self, nonce: str, account: AccountEntity | None) -> NonceEntity | None:
         if account:
