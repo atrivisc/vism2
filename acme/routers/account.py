@@ -60,11 +60,7 @@ class AccountRouter:
             headers={
                 "Content-Type": "application/json",
                 "Location": location,
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        request.state.account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
             },
         )
 
@@ -114,10 +110,6 @@ class AccountRouter:
             headers={
                 "Content-Type": "application/json",
                 "Location": location,
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
             },
         )

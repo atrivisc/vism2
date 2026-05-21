@@ -1,10 +1,12 @@
 """Database interface for VISM ACME operations."""
-
-from typing import Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Type
 from uuid import UUID
 
 from jwcrypto.jwk import JWK
-from vism_lib.database import VismDatabase
+from sqlalchemy import ColumnExpressionArgument
+from vism_lib.database import VismDatabase, Base
+
 from acme.db import (
     OrderEntity,
     AccountEntity,
@@ -12,17 +14,46 @@ from acme.db import (
     ChallengeEntity,
     JWKEntity
 )
+from acme.db.nonce import NonceEntity
+from acme.config import acme_logger
 
 
 class VismAcmeDatabase(VismDatabase):
     """Database interface for VISM ACME operations."""
+
+    def delete(self, obj_type: Type[Base], *criterion: ColumnExpressionArgument[bool]):
+        with self._get_session() as session:
+            session.query(obj_type).filter(*criterion).delete()
+
+    def nonce_cleanup(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        try:
+            self.delete(NonceEntity, NonceEntity.created_at < cutoff)
+        except Exception as e:
+            acme_logger.warning(f"Failed to cleanup nonces: {e}")
+
+    @staticmethod
+    def new_nonce(account: AccountEntity | None = None) -> NonceEntity:
+        return NonceEntity(account=account)
+
+    def pop_nonce(self, nonce: str, account: AccountEntity) -> NonceEntity | None:
+        if account:
+            nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce, NonceEntity.account_id == account.id)
+        else:
+            nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce)
+
+        if not nonce_entity:
+            return None
+
+        self.delete(NonceEntity, NonceEntity.id == nonce_entity.id)
+        return nonce_entity
 
     def get_orders_by_account_kid(
             self,
             account_kid: str
     ) -> Optional[list[OrderEntity]]:
         """Get all orders for an account by account kid."""
-        return self.get(AccountEntity, AccountEntity.kid == account_kid)
+        return self.get(AccountEntity, AccountEntity.kid == account_kid, multiple=True)
 
     def get_order_by_id(self, order_id: str) -> Optional[OrderEntity]:
         """Get an order by its ID."""

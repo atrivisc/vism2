@@ -15,13 +15,13 @@ class BaseRouter:
         self.controller = controller
         self.router = APIRouter()
         self.router.get("/directory")(self.directory)
-        self.router.head("/new-nonce")(self.new_nonce)
-        self.router.get("/new-nonce")(self.new_nonce)
+        self.router.head("/new-nonce")(self._new_nonce)
+        self.router.get("/new-nonce")(self._new_nonce)
 
-    async def new_nonce(self):
+    async def _new_nonce(self):
         """Return new nonce."""
         acme_logger.info("Received request to create new nonce.")
-        nonce = await self.controller.nonce_manager.new_nonce()
+        nonce = self.controller.database.new_nonce().nonce
         return Response(status_code=200, headers={"Replay-Nonce": nonce})
 
     async def directory(self, request: AcmeRequest):

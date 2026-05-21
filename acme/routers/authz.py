@@ -80,15 +80,11 @@ class AuthzRouter:
             content={
                 "status": challenge_entity.status,
                 "type": challenge_entity.type,
-                "token": challenge_entity.key_authorization.split(".")[0],
+                "token": str(challenge_entity.key_authorization).split(".")[0],
             },
             headers={
                 "Content-Type": "application/json",
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        request.state.account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
                 "Retry-After": self.controller.config.retry_after_seconds
             }
         )
@@ -126,7 +122,7 @@ class AuthzRouter:
             authz_expired = authz_entity.status == AuthzStatus.EXPIRED
             if not authz_expired:
                 authz_expired = (
-                    datetime.now() > datetime.fromisoformat(authz_entity.expires)
+                    datetime.now() > datetime.fromisoformat(str(authz_entity.expires))
                 )
                 if authz_expired:
                     authz_entity.status = AuthzStatus.EXPIRED
@@ -143,14 +139,10 @@ class AuthzRouter:
                 if order_expired:
                     authz_entity.order.status = OrderStatus.EXPIRED
                     authz_entity.order = (
-                        self.controller.database.save_to_db(
-                            authz_entity.order
-                        )
+                        self.controller.database.save_to_db(authz_entity.order)
                     )
 
-        authz_challenges = self.controller.database.get_challenges_by_authz_id(
-            authz_entity.id
-        )
+        authz_challenges = self.controller.database.get_challenges_by_authz_id(authz_entity.id)
 
         response_code = 200
         if authz_expired or order_expired:
@@ -181,11 +173,7 @@ class AuthzRouter:
             content=response,
             headers={
                 "Content-Type": "application/json",
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        request.state.account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
                 "Retry-After": self.controller.config.retry_after_seconds
             }
         )

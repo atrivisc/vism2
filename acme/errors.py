@@ -45,9 +45,7 @@ class ACMEProblemResponse(Exception):
             content=self.error_json,
             headers={
                 "Content-Type": "application/problem+json",
-                "Replay-Nonce": (
-                    await controller.nonce_manager.new_nonce()
-                ),
+                "Replay-Nonce": controller.database.new_nonce().nonce,
                 "Retry-After": (
                     controller.config.retry_after_seconds
                 )

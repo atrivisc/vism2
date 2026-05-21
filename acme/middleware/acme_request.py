@@ -219,9 +219,7 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
             return await exc.to_json_response(self.controller)
 
         nonce_provided = request.state.jws_envelope.headers.nonce
-        popped_nonce = await self.controller.nonce_manager.pop_nonce(
-            nonce_provided, account.id if account else None
-        )
+        popped_nonce = await self.controller.database.pop_nonce(nonce_provided, account)
         if not nonce_provided or not popped_nonce:
             return JSONResponse(
                 status_code=400,
@@ -231,11 +229,7 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
                 },
                 headers={
                     "Content-Type": "application/problem+json",
-                    "Replay-Nonce": (
-                        await self.controller.nonce_manager.new_nonce(
-                            account.id if account else None
-                        )
-                    ),
+                    "Replay-Nonce": self.controller.database.new_nonce(account).nonce,
                     "Retry-After": (
                         self.controller.config.retry_after_seconds
                     )

@@ -12,7 +12,6 @@ from acme.database import VismAcmeDatabase
 from acme.db import OrderEntity, OrderStatus, ErrorEntity
 from acme.errors import ACMEProblemResponse
 from acme.middleware import AcmeAccountMiddleware, JWSMiddleware
-from acme.nonce import NonceManager
 from vism_lib.controller import Controller
 from vism_lib.data.exchange import DataExchangeCertMessage
 from vism_lib.errors import VismException
@@ -27,12 +26,12 @@ class VismACMEController(Controller):
 
     def __init__(self):
         super().__init__()
-        self.nonce_manager = NonceManager(self.config.nonce_ttl_seconds)
         self.api = FastAPI(lifespan=self.lifespan)
-
         self.setup_exception_handlers()
         self.setup_middleware()
         self.setup_routes()
+
+        self.database: VismAcmeDatabase = self.database
 
     async def _get_order_for_csr(self, order_id: str) -> OrderEntity:
         """Get and validate order for CSR processing."""
@@ -112,6 +111,10 @@ class VismACMEController(Controller):
         order.status = OrderStatus.VALID
         order.crt_pem = message.chain
         self.database.save_to_db(order)
+
+        # Before we exit, run nonce cleanup
+        self.database.nonce_cleanup()
+
         return None
 
     @asynccontextmanager

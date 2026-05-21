@@ -20,7 +20,7 @@ class PubRouter:
     def build_index_html(paths: list[str]) -> str:
         """Build a simple HTML index listing the given files."""
         items = "\n".join(
-            f'<li><a href="pub/{p}">pub/{p}</a></li>' for p in paths
+            f'<li><a href="pub/{p}">{p}</a></li>' for p in paths
         )
         return f"""
         <!DOCTYPE html>

@@ -25,7 +25,7 @@ class OrderRouter:
     """Router for handling ACME order endpoints."""
 
     def __init__(self, controller: VismACMEController):
-        self.controller = controller
+        self.controller: VismACMEController = controller
 
         self.router = APIRouter()
         self.router.post("/new-order")(self.new_order)
@@ -100,7 +100,7 @@ class OrderRouter:
         order_authz_entities = (
             self.controller.database.get_authz_by_order_id(order_id)
         )
-        domains = [authz.identifier_value for authz in order_authz_entities]
+        domains = [str(authz.identifier_value) for authz in order_authz_entities]
 
         profile = self.controller.config.get_profile_by_name(str(order.profile_name))
         csr = profile.validate_csr(csr_der_b64, domains)
@@ -194,11 +194,7 @@ class OrderRouter:
             status_code=200,
             headers={
                 "Content-Type": "application/json",
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        request.state.account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
             }
         )
 
@@ -310,10 +306,6 @@ class OrderRouter:
             headers={
                 "Content-Type": "application/json",
                 "Location": absolute_url(request, f"/order/{order.id}"),
-                "Replay-Nonce": (
-                    await self.controller.nonce_manager.new_nonce(
-                        request.state.account.id
-                    )
-                ),
+                "Replay-Nonce": self.controller.database.new_nonce(request.state.account).nonce,
             }
         )
