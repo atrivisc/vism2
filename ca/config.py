@@ -296,7 +296,7 @@ class X509ConfigDistributionPointReasonFlags(enum.Enum):
 @dataclass
 class X509ConfigDistributionPointName:
     """X509 distribution point name configuration."""
-    name: list[str] = field(default_factory=list)
+    name: str = field(default_factory=list)
     name_type: X509ConfigLocationType = X509ConfigLocationType.URL
 
     def to_general_name(self) -> rfc5280.GeneralName:
