@@ -219,17 +219,17 @@ class X509ConfigSubjectAlternativeName(X509ConfigExtension):
 
     def to_asn1(self):
         subject_alt_names = rfc5280.SubjectAltName()
-        for ip in self.ips:
+        for ip in self.ips or []:
             name = rfc5280.GeneralName()
             name.setComponentByName("iPAddress", univ.OctetString(ip))
             subject_alt_names.append(name)
 
-        for dn in self.dns:
+        for dn in self.dns or []:
             name = rfc5280.GeneralName()
             name.setComponentByName("dNSName", char.IA5String(dn))
             subject_alt_names.append(name)
 
-        for email in self.emails:
+        for email in self.emails or []:
             name = rfc5280.GeneralName()
             name.setComponentByName("rfc822Name", char.IA5String(email))
             subject_alt_names.append(name)
@@ -296,7 +296,7 @@ class X509ConfigDistributionPointReasonFlags(enum.Enum):
 @dataclass
 class X509ConfigDistributionPointName:
     """X509 distribution point name configuration."""
-    name: str = field(default_factory=list)
+    name: str
     name_type: X509ConfigLocationType = X509ConfigLocationType.URL
 
     def to_general_name(self) -> rfc5280.GeneralName:

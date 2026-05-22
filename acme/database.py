@@ -58,7 +58,11 @@ class VismAcmeDatabase(VismDatabase):
             account_kid: str
     ) -> Optional[list[OrderEntity]]:
         """Get all orders for an account by account kid."""
-        return self.get(AccountEntity, AccountEntity.kid == account_kid, multiple=True)
+        account = self.get(AccountEntity, AccountEntity.kid == account_kid)
+        if not account:
+            return []
+
+        return self.get(OrderEntity, OrderEntity.account_id == account.id, multiple=True)
 
     def get_order_by_id(self, order_id: str) -> Optional[OrderEntity]:
         """Get an order by its ID."""

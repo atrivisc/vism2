@@ -1,10 +1,12 @@
 """"""
 import hashlib
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Self
 
+import cryptography
 import pkcs11
+import cryptography.exceptions
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -68,6 +70,8 @@ class Certificate:
 
         self._db_entry = None
 
+    ### Properties ###
+
     @property
     def db_entry(self) -> CertificateEntity:
         if self._db_entry is None:
@@ -90,11 +94,45 @@ class Certificate:
 
         return chain
 
+    ### Util functions ###
+
+    @staticmethod
+    async def _next_serial() -> int:
+        """
+        Returns the next serial number for a certificate.
+        Currently only generates 159 bits of randomness.
+
+        :return:
+        """
+        return secrets.randbits(159)
+
+    async def verify_issued_by(self, crt_der: bytes) -> None:
+        """
+        Verifies that this certificate issued the cert in crt_der.
+
+        :raises ValueError: If the issuer name on the certificate does not match the subject name of the issuer or the signature algorithm is unsupported.
+        :raises TypeError: If the issuer does not have a supported public key type.
+        :raises cryptography.exceptions.InvalidSignature: If the signature fails to verify.
+        :param crt_der:
+        :return:
+        """
+        subject = x509.load_der_x509_certificate(crt_der)
+        issuer = x509.load_der_x509_certificate(self.db_entry.crt_der)
+
+        try:
+            subject.verify_directly_issued_by(issuer)
+        except cryptography.exceptions.InvalidSignature as e:
+            raise VismBreakingException("Certificate signature is invalid") from e
+        except ValueError as e:
+            raise VismBreakingException("Certificate issuer name does not match the subject name") from e
+        except TypeError as e:
+            raise VismBreakingException("Issuer public key type is not supported") from e
+
     def _get_algorithm_identifier(self, hash_algorithm_name: str) -> rfc5280.AlgorithmIdentifier:
         algorithm_identifier = rfc5280.AlgorithmIdentifier()
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
             # Note: Explicitly disabling RSA-PSS support for now due to windows crypto api lack of support
-            # I hate micosoft so much
+            # I hate microsoft so much
             # if self.p11_client.is_pss_supported:
             #     template = _rsa_pss_map[hash_algorithm_name.upper()]
             #
@@ -118,6 +156,8 @@ class Certificate:
     async def _sign_object(self, obj: Asn1Item, hash_algorithm_name: str) -> tuple[rfc5280.AlgorithmIdentifier, univ.BitString]:
         signature_algorithm = self._get_algorithm_identifier(hash_algorithm_name)
         signature_bytes = self.controller.p11_client.sign_data(self.priv_key, der_encoder(obj), hash_algorithm_name)
+
+        # p11 returns a raw signature for EC, so we need to encode it
         if self.priv_key.key_type == pkcs11.KeyType.EC:
             sig_len = len(signature_bytes)
             int1 = signature_bytes[:(sig_len // 2)]
@@ -125,12 +165,10 @@ class Certificate:
             signature_bytes = encode_dss_signature(int.from_bytes(int1), int.from_bytes(int2))
 
         bit_string = univ.BitString.fromHexString(signature_bytes.hex())
-
         return signature_algorithm, bit_string
 
     async def _create_csr(self) -> bytes:
-        attributes = rfc2986.Attributes().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
-
+        ### Extensions ###
         ext_req_attribute = rfc2985.SingleAttribute()
         ext_req_attribute_val = ExtensionsRequest()
         extensions = rfc5280.Extensions()
@@ -153,6 +191,7 @@ class Certificate:
         ext_req_attribute["type"] = univ.ObjectIdentifier("1.2.840.113549.1.9.14")
         ext_req_attribute['values'] = ext_req_attribute_val
 
+        attributes = rfc2986.Attributes().subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
         attributes.append(ext_req_attribute)
 
         csr_info = rfc2986.CertificationRequestInfo()
@@ -164,11 +203,18 @@ class Certificate:
         csr = rfc2986.CertificationRequest()
         csr.setComponentByName("certificationRequestInfo", csr_info)
 
-        signature_algorithm, signature = await self._sign_object(csr_info, self.CRT_SIGN_HASH_ALG)
+        signature_algorithm, signature = await self._sign_object(csr_info, self.CSR_SIGN_HASH_ALG)
         csr.setComponentByName("signatureAlgorithm", signature_algorithm)
         csr.setComponentByName("signature", signature)
 
         return der_encoder(csr)
+
+    def _get_extension(self, extension_oid: str) -> rfc5280.Extension | None:
+        cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0] if self.db_entry.crt_der is not None else None
+        if not cert:
+            return None
+
+        return next(filter(lambda e: str(e['extnID']) == extension_oid, cert["tbsCertificate"]["extensions"]), None)
 
     async def sign_csr(self, csr_der: bytes, days: int, is_ca: bool) -> bytes:
         issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0] if self.db_entry.crt_der is not None else None
@@ -205,15 +251,13 @@ class Certificate:
 
         ### Authority Key Identifier ###
         if issuer_cert:
-            issuer_skid_ext = next(filter(lambda e: e['extnID'] == x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
+            issuer_skid_ext = self._get_extension(x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string)
 
             if not issuer_skid_ext:
                 raise VismBreakingException(f"Issuer certificate '{self.config.name}' does not contain subject key identifier extension.")
 
-            skid = der_decoder(issuer_skid_ext['extnValue'], asn1Spec=rfc5280.SubjectKeyIdentifier())[0]
-
             akid = rfc5280.AuthorityKeyIdentifier()
-            akid['keyIdentifier'] = skid['keyIdentifier']
+            akid['keyIdentifier'] = der_decoder(issuer_skid_ext['extnValue'], asn1Spec=rfc5280.SubjectKeyIdentifier())[0].asOctets()
 
             akid_extension = rfc5280.Extension()
             akid_extension["extnID"] = x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string
@@ -231,7 +275,7 @@ class Certificate:
 
         ### Authority Information Access ###
         if not is_ca:
-            issuer_aia_ext = next(filter(lambda e: e['extnID'] == x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
+            issuer_aia_ext = self._get_extension(x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string)
             if issuer_aia_ext:
                 extensions.append(issuer_aia_ext)
             else:
@@ -239,15 +283,15 @@ class Certificate:
 
         ### CRL Distribution Points ###
         if not is_ca:
-            crl_dist_ext = next(filter(lambda e: e['extnID'] == x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
+            crl_dist_ext = self._get_extension(x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string)
             if crl_dist_ext:
                 extensions.append(crl_dist_ext)
             else:
                 extensions.append(self.config.x509.crl_distribution_points.to_asn1_ext())
 
-        tbs_cert["issuer"] = issuer_cert["tbsCertificate"]["subject"]
+        tbs_cert["issuer"] = issuer_cert["tbsCertificate"]["subject"] if issuer_cert else csr_info.getComponentByName("subject")
         tbs_cert["version"] = self.CERT_VERSION
-        tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(random.getrandbits(159))
+        tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(await self._next_serial())
         tbs_cert["signature"] = signature_algorithm
         tbs_cert["validity"] = validity
         tbs_cert["subject"] = csr_info.getComponentByName("subject")
@@ -261,6 +305,8 @@ class Certificate:
         crt["tbsCertificate"] = tbs_cert
         crt["signatureAlgorithm"] = signature_algorithm
         crt["signature"] = signature
+
+        await self.verify_issued_by(der_encoder(crt))
 
         issued_certificate = IssuedCertificate(
             status_flag = "v",
@@ -288,10 +334,11 @@ class Certificate:
             except error.PyAsn1Error:
                 pass
 
-            try:
-                cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.GeneralizedTime())[0]
-            except error.PyAsn1Error:
-                pass
+            if cert_expiry_time is None:
+                try:
+                    cert_expiry_time = der_decoder(cert.expiration_date, asn1Spec=useful.GeneralizedTime())[0]
+                except error.PyAsn1Error:
+                    pass
 
             if cert_expiry_time is None:
                 raise VismBreakingException(f"Certificate has invalid expiration date: {cert.expiration_date}")
@@ -344,12 +391,6 @@ class Certificate:
 
         return der_encoder(crl)
 
-    async def verify_issued_by(self, crt_der: bytes):
-        subject = x509.load_der_x509_certificate(crt_der)
-        issuer = x509.load_der_x509_certificate(self.db_entry.crt_der)
-
-        subject.verify_directly_issued_by(issuer)
-
     async def create(self) -> CertificateEntity:
         ca_logger.info(f"Creating certificate {self.config.name}")
 
@@ -372,7 +413,7 @@ class Certificate:
                 csr_pem = x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
                 raise VismException(
                     f"Certificate {self.config.name} needs to be manually signed "
-                    f"by the external issuer {self.issuer.config.name}."
+                    f"by the external issuer {self.issuer.config.name}. "
                     f"CSR: \n{csr_pem}"
                 )
 
@@ -416,8 +457,11 @@ class Certificate:
         raise VismBreakingException("I dont know how you got here")
 
     async def save_to_db(self):
-        await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
-        await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crl/{self.config.name}.crl")
+        if self.db_entry.crt_der is not None:
+            await self.controller.s3_client.upload_bytes(self.db_entry.crt_der, f"crt/{self.config.name}.crt")
+
+        if self.db_entry.crl_der is not None:
+            await self.controller.s3_client.upload_bytes(self.db_entry.crl_der, f"crl/{self.config.name}.crl")
 
         self._db_entry = self.database.save_to_db(self.db_entry)
         return self.db_entry
@@ -429,8 +473,7 @@ class Certificate:
         # This also loads all the important attributes when the key already exists
         self.pub_key, self.priv_key = self.p11_client.generate_keypair(self.pub_key, self.priv_key)
 
-        if self.db_entry is None or self.db_entry.crt_der is None:
+        if self.db_entry.crt_der is None or self.db_entry.crl_der is None:
             return await self.create()
 
         return self.db_entry
-

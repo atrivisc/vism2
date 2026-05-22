@@ -1,7 +1,6 @@
 """Router for ACME base operations."""
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
-from urllib3 import request
 
 from acme.acme import VismACMEController
 from acme.config import acme_logger

@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from cryptography import x509
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
@@ -42,7 +42,7 @@ class VismACMEController(Controller):
 
         order_expired = order.status == OrderStatus.EXPIRED
         if not order_expired:
-            order_expired = datetime.fromisoformat(order.expires) < datetime.now()
+            order_expired = datetime.fromisoformat(order.expires) < datetime.now(timezone.utc)
 
         if order_expired:
             order.status = OrderStatus.EXPIRED
@@ -62,8 +62,6 @@ class VismACMEController(Controller):
 
     async def handle_chain_from_ca(self, message: DataExchangeCertMessage):
         order = await self._get_order_for_csr(message.order_id)
-        if order is None:
-            return None
 
         try:
             certificates = x509.load_pem_x509_certificates(message.chain.encode("utf-8"))

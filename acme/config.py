@@ -381,7 +381,7 @@ class Http01:
     follow_redirect: bool = True
     timeout_seconds: int = 2
     retries: int = 1
-    retry_delay_seconds: int = 0.1
+    retry_delay_seconds: int = 1
 
     @field_validator("port")
     @classmethod
@@ -407,7 +407,7 @@ class AcmeConfig(VismConfig):
     """Main configuration class for VISM ACME server."""
 
     __path__: ClassVar[str] = "vism_acme"
-    __config_dir__: ClassVar[str] = f"{os.getenv("CONFIG_DIR", os.getcwd()).rstrip("/")}"
+    __config_dir__: ClassVar[str] = f"{os.getenv('CONFIG_DIR', os.getcwd()).rstrip('/')}"
     __config_file__: ClassVar[str] = f"{__config_dir__}/vism_acme.yaml"
 
     profiles: list[Profile] = field(default_factory=list)

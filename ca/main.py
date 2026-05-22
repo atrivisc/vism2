@@ -63,7 +63,13 @@ class VismCA(Controller):
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
     async def handle_csr_from_acme(self, message: DataExchangeCSRMessage) -> None:
-        csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+        if message.ca_name not in self.certificates:
+            return ca_logger.error(f"Invalid cert order '{message.order_id}': CA {message.ca_name} not found in the certificates list.")
+
+        try:
+            csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+        except Exception as e:
+            return ca_logger.error(f"Invalid cert order '{message.order_id}': Failed to parse CSR: {e}")
 
         issuer = self.certificates[message.ca_name]
         signed_cert_der = await issuer.sign_csr(csr_der_bytes, message.days, is_ca=False)

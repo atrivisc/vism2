@@ -13,7 +13,7 @@ def _new_nonce():
     return secrets.token_urlsafe(32)
 
 class NonceEntity(Base):
-    """Database entity representing an ACME order."""
+    """Database entity representing an ACME nonce."""
 
     __tablename__ = 'nonce'
     nonce: Mapped[str] = mapped_column(String(64), default_factory=_new_nonce, init=False)
