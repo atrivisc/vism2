@@ -213,13 +213,25 @@ class Certificate:
             extensions.append(akid_extension)
 
         ### Requested Extensions ###
+        is_ca = False
         csr_attributes: rfc2986.Attributes = csr_info.getComponentByName("attributes")
         ext_req_attr = next(filter(lambda attr: attr['type'] == univ.ObjectIdentifier("1.2.840.113549.1.9.14"), csr_attributes), None)
         if ext_req_attr:
             requested_extensions = ext_req_attr['values']
             for ext_oct in requested_extensions:
                 for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
+                    if ext.oid == x509.oid.ExtensionOID.BASIC_CONSTRAINTS and ext.value.ca:
+                        is_ca = True
                     extensions.append(ext)
+
+        # TODO: For these pull the extensions from crt in db not config?
+        ### Authority Information Access ###
+        if not is_ca:
+            extensions.append(self.config.x509.authority_info_access.to_asn1_ext())
+
+        ### CRL Distribution Points ###
+        if not is_ca:
+            extensions.append(self.config.x509.crl_distribution_points.to_asn1_ext())
 
         # Not the most elegant, but it solves the problem of someone changing the config
         issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
