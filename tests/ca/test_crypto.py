@@ -1,0 +1,984 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import hashlib
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from pyasn1.codec.der.decoder import decode as der_decoder
+from pyasn1.codec.der.encoder import encode as der_encoder
+from pyasn1.type import char, tag, univ
+from pyasn1_modules import rfc5280, rfc2986
+
+from ca.asn1 import RevokedCertificateEntry
+from ca.crypto.build import (
+    CERT_VERSION,
+    CRL_VERSION,
+    CSR_VERSION,
+    build_certification_request_info,
+    build_revoked_certificate_entry,
+    build_tbs_cert_list,
+    build_tbs_certificate,
+)
+from ca.crypto.util import get_algorithm_identifier
+from ca.errors import CryptoException
+
+
+OID_EXT_REQUEST = "1.2.840.113549.1.9.14"
+OID_SUBJECT_KEY_IDENTIFIER = "2.5.29.14"
+OID_AUTHORITY_KEY_IDENTIFIER = "2.5.29.35"
+OID_BASIC_CONSTRAINTS = "2.5.29.19"
+OID_KEY_USAGE = "2.5.29.15"
+OID_AUTHORITY_INFO_ACCESS = "1.3.6.1.5.5.7.1.1"
+OID_CRL_DISTRIBUTION_POINTS = "2.5.29.31"
+OID_CRL_REASON = "2.5.29.21"
+OID_OCSP = "1.3.6.1.5.5.7.48.1"
+OID_COMMON_NAME = "2.5.4.3"
+
+
+# --- helpers --------------------------------------------------------------
+
+def _make_name(cn: str) -> rfc5280.Name:
+    name = rfc5280.Name()
+    rdns = rfc5280.RDNSequence()
+    rdn = rfc5280.RelativeDistinguishedName()
+    atv = rfc5280.AttributeTypeAndValue()
+    atv["type"] = univ.ObjectIdentifier(OID_COMMON_NAME)
+    atv["value"] = char.UTF8String(cn)
+    rdn.append(atv)
+    rdns.append(rdn)
+    name["rdnSequence"] = rdns
+    return name
+
+
+def _make_basic_constraints_ext(ca: bool = True, path_len: int | None = None) -> rfc5280.Extension:
+    bc = rfc5280.BasicConstraints()
+    bc.setComponentByName("cA", ca)
+    if path_len is not None:
+        bc.setComponentByName("pathLenConstraint", path_len)
+    ext = rfc5280.Extension()
+    ext["extnID"] = univ.ObjectIdentifier(OID_BASIC_CONSTRAINTS)
+    ext["critical"] = True
+    ext["extnValue"] = univ.OctetString(der_encoder(bc))
+    return ext
+
+
+def _uri_general_name(url: str) -> rfc5280.GeneralName:
+    gn = rfc5280.GeneralName()
+    uri = char.IA5String(url).subtype(
+        implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 6)
+    )
+    gn.setComponentByName("uniformResourceIdentifier", uri)
+    return gn
+
+
+def _make_aia_ext(url: str = "http://ocsp.example.com") -> rfc5280.Extension:
+    aia = rfc5280.AuthorityInfoAccessSyntax()
+    ad = rfc5280.AccessDescription()
+    ad["accessMethod"] = univ.ObjectIdentifier(OID_OCSP)
+    ad["accessLocation"] = _uri_general_name(url)
+    aia.append(ad)
+    ext = rfc5280.Extension()
+    ext["extnID"] = univ.ObjectIdentifier(OID_AUTHORITY_INFO_ACCESS)
+    ext["extnValue"] = univ.OctetString(der_encoder(aia))
+    return ext
+
+
+def _make_crldp_ext(url: str = "http://crl.example.com/root.crl") -> rfc5280.Extension:
+    dp = rfc5280.DistributionPoint()
+    dpn_schema = dp.getComponentType().getTypeByPosition(
+        dp.getComponentType().getPositionByName("distributionPoint")
+    )
+    dpn = dpn_schema.clone()
+    fn_schema = dpn.getComponentType().getTypeByPosition(
+        dpn.getComponentType().getPositionByName("fullName")
+    )
+    full = fn_schema.clone()
+    full.append(_uri_general_name(url))
+    dpn.setComponentByName("fullName", full)
+    dp.setComponentByName("distributionPoint", dpn)
+    crldp = rfc5280.CRLDistributionPoints()
+    crldp.append(dp)
+    ext = rfc5280.Extension()
+    ext["extnID"] = univ.ObjectIdentifier(OID_CRL_DISTRIBUTION_POINTS)
+    ext["extnValue"] = univ.OctetString(der_encoder(crldp))
+    return ext
+
+
+def _build_csr(
+    key: ec.EllipticCurvePrivateKey,
+    cn: str,
+    extensions: list[rfc5280.Extension] | None = None,
+) -> rfc2986.CertificationRequest:
+    """Produce a DER-roundtripped CSR, matching the real call path in
+    CertificateManager.sign_csr_der."""
+    if extensions is None:
+        extensions = [_make_basic_constraints_ext(ca=True, path_len=0)]
+    pub_bytes = key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    csr_info = build_certification_request_info(
+        subject=_make_name(cn),
+        requested_extensions=extensions,
+        public_key_bytes=pub_bytes,
+    )
+    csr = rfc2986.CertificationRequest()
+    csr["certificationRequestInfo"] = csr_info
+    csr["signatureAlgorithm"] = get_algorithm_identifier(key.public_key(), "SHA256")
+    csr["signature"] = univ.BitString(hexValue="00")
+    csr_der = der_encoder(csr)
+    decoded, _ = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())
+    return decoded
+
+
+def _build_issuer_cert(
+    key: ec.EllipticCurvePrivateKey,
+    cn: str = "Test Root CA",
+    include_skid: bool = True,
+    aia_ext: rfc5280.Extension | None = None,
+    crldp_ext: rfc5280.Extension | None = None,
+) -> rfc5280.Certificate:
+    """Build a minimal usable issuer Certificate (self-issued root shape)."""
+    cert = rfc5280.Certificate()
+    tbs = cert["tbsCertificate"]
+    tbs["version"] = CERT_VERSION
+    tbs["serialNumber"] = rfc5280.CertificateSerialNumber(1)
+    tbs["signature"] = get_algorithm_identifier(key.public_key(), "SHA256")
+    tbs["issuer"] = _make_name(cn)
+    tbs["subject"] = _make_name(cn)
+
+    pub_der = key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    spki, _ = der_decoder(pub_der, asn1Spec=rfc5280.SubjectPublicKeyInfo())
+    tbs["subjectPublicKeyInfo"] = spki
+
+    validity = rfc5280.Validity()
+    from ca.crypto.util import get_ans1_time
+    validity["notBefore"] = get_ans1_time(datetime(2024, 1, 1, tzinfo=timezone.utc))
+    validity["notAfter"] = get_ans1_time(datetime(2034, 1, 1, tzinfo=timezone.utc))
+    tbs["validity"] = validity
+
+    ext_schema = tbs.getComponentType().getTypeByPosition(
+        tbs.getComponentType().getPositionByName("extensions")
+    )
+    exts = ext_schema.clone()
+
+    if include_skid:
+        skid_value = hashlib.sha1(der_encoder(spki)).digest()
+        skid_ext = rfc5280.Extension()
+        skid_ext["extnID"] = univ.ObjectIdentifier(OID_SUBJECT_KEY_IDENTIFIER)
+        skid_ext["extnValue"] = univ.OctetString(
+            der_encoder(rfc5280.SubjectKeyIdentifier(skid_value))
+        )
+        exts.append(skid_ext)
+
+    if aia_ext is not None:
+        exts.append(aia_ext)
+    if crldp_ext is not None:
+        exts.append(crldp_ext)
+
+    if len(exts) > 0:
+        tbs["extensions"] = exts
+
+    cert["signatureAlgorithm"] = get_algorithm_identifier(key.public_key(), "SHA256")
+    cert["signature"] = univ.BitString(hexValue="00")
+    return cert
+
+
+# --- fixtures -------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def issuer_key() -> ec.EllipticCurvePrivateKey:
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+@pytest.fixture(scope="session")
+def subject_key() -> ec.EllipticCurvePrivateKey:
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+@pytest.fixture(scope="session")
+def issuer_aia_ext() -> rfc5280.Extension:
+    return _make_aia_ext("http://ocsp.issuer.example.com")
+
+
+@pytest.fixture(scope="session")
+def issuer_crldp_ext() -> rfc5280.Extension:
+    return _make_crldp_ext("http://crl.issuer.example.com/root.crl")
+
+
+@pytest.fixture(scope="session")
+def issuer_cert(issuer_key, issuer_aia_ext, issuer_crldp_ext) -> rfc5280.Certificate:
+    return _build_issuer_cert(
+        issuer_key,
+        cn="Test Root CA",
+        include_skid=True,
+        aia_ext=issuer_aia_ext,
+        crldp_ext=issuer_crldp_ext,
+    )
+
+
+@pytest.fixture(scope="session")
+def subject_csr(subject_key) -> rfc2986.CertificationRequest:
+    return _build_csr(subject_key, "Test Leaf")
+
+
+@pytest.fixture(scope="session")
+def issuer_self_csr(issuer_key) -> rfc2986.CertificationRequest:
+    return _build_csr(issuer_key, "Test Root CA")
+
+
+def _get_ext(tbs: rfc5280.TBSCertificate, oid: str) -> rfc5280.Extension | None:
+    for ext in tbs["extensions"]:
+        if str(ext["extnID"]) == oid:
+            return ext
+    return None
+
+
+def _all_ext_oids(tbs: rfc5280.TBSCertificate) -> list[str]:
+    return [str(ext["extnID"]) for ext in tbs["extensions"]]
+
+
+def _sig_alg():
+    return get_algorithm_identifier(
+        ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+    )
+
+
+def _build(issuer_cert, csr, *, is_ca=True, days=90, signature_algorithm=None, **kwargs):
+    """Shorthand for build_tbs_certificate with sensible defaults. Most
+    tests default to is_ca=True since that exercises the simpler path
+    (no AIA/CRLDP handling in the builder). Tests focused on leaf
+    behavior pass is_ca=False explicitly."""
+    return build_tbs_certificate(
+        issuer_cert=issuer_cert,
+        csr=csr,
+        days=days,
+        signature_algorithm=signature_algorithm or _sig_alg(),
+        is_ca=is_ca,
+        **kwargs,
+    )
+
+
+# =========================================================================
+# Constants
+# =========================================================================
+
+class TestVersionConstants:
+    """RFC 5280 §4.1.2.1 and RFC 5280 §5.1.2.1 use 0-indexed ASN.1 INTEGER
+    encoding: v1=0, v2=1, v3=2."""
+
+    def test_csr_version(self):
+        assert CSR_VERSION == 0  # PKCS#10 RFC 2986 §4.1: v1=0
+
+    def test_cert_version(self):
+        assert CERT_VERSION == 2  # X.509 v3
+
+    def test_crl_version(self):
+        assert CRL_VERSION == 1  # X.509 CRL v2
+
+
+# =========================================================================
+# build_certification_request_info
+# =========================================================================
+
+class TestBuildCertificationRequestInfo:
+
+    def test_version_set(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[_make_basic_constraints_ext()],
+            public_key_bytes=pub_bytes,
+        )
+        assert int(info["version"]) == CSR_VERSION
+
+    def test_subject_set(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Subject CN"),
+            requested_extensions=[_make_basic_constraints_ext()],
+            public_key_bytes=pub_bytes,
+        )
+        # Round-trip via DER to compare names structurally
+        encoded_subject = der_encoder(info["subject"])
+        expected_subject = der_encoder(_make_name("Subject CN"))
+        assert encoded_subject == expected_subject
+
+    def test_spki_set(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[_make_basic_constraints_ext()],
+            public_key_bytes=pub_bytes,
+        )
+        assert der_encoder(info["subjectPKInfo"]) == pub_bytes
+
+    def test_extension_request_attribute_present(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[_make_basic_constraints_ext()],
+            public_key_bytes=pub_bytes,
+        )
+        attrs = info["attributes"]
+        oids = [str(a["type"]) for a in attrs]
+        assert OID_EXT_REQUEST in oids
+
+    def test_none_entries_skipped(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        bc = _make_basic_constraints_ext()
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[None, bc, None],
+            public_key_bytes=pub_bytes,
+        )
+        # Round-trip and inspect
+        der = der_encoder(info)
+        decoded, _ = der_decoder(der, asn1Spec=rfc2986.CertificationRequestInfo())
+        ext_attr = next(a for a in decoded["attributes"] if str(a["type"]) == OID_EXT_REQUEST)
+        extensions_set, _ = der_decoder(ext_attr["values"][0], asn1Spec=rfc5280.Extensions())
+        assert len(extensions_set) == 1
+        assert str(extensions_set[0]["extnID"]) == OID_BASIC_CONSTRAINTS
+
+    def test_result_round_trips_through_csr(self, subject_key):
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[_make_basic_constraints_ext()],
+            public_key_bytes=pub_bytes,
+        )
+        csr = rfc2986.CertificationRequest()
+        csr["certificationRequestInfo"] = info
+        csr["signatureAlgorithm"] = get_algorithm_identifier(subject_key.public_key(), "SHA256")
+        csr["signature"] = univ.BitString(hexValue="00")
+        csr_der = der_encoder(csr)
+        assert isinstance(csr_der, bytes) and len(csr_der) > 0
+
+    def test_empty_extensions_produces_encodable_csr(self, subject_key):
+        """A CSR with no requested extensions must still be DER-encodable
+        per RFC 2986 §4: the ExtensionRequest attribute is optional, and
+        if no extensions are requested it must be omitted (Extensions has
+        SIZE(1..MAX), so an empty Extensions is malformed)."""
+        pub_bytes = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        info = build_certification_request_info(
+            subject=_make_name("Test"),
+            requested_extensions=[],
+            public_key_bytes=pub_bytes,
+        )
+        csr = rfc2986.CertificationRequest()
+        csr["certificationRequestInfo"] = info
+        csr["signatureAlgorithm"] = get_algorithm_identifier(subject_key.public_key(), "SHA256")
+        csr["signature"] = univ.BitString(hexValue="00")
+        der = der_encoder(csr)
+        assert isinstance(der, bytes) and len(der) > 0
+
+
+# =========================================================================
+# build_tbs_certificate — basic structure
+# =========================================================================
+
+class TestBuildTbsCertificateBasics:
+
+    def test_version_is_v3(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        assert int(tbs["version"]) == CERT_VERSION
+
+    def test_signature_algorithm_set(self, issuer_cert, subject_csr):
+        sig_alg = get_algorithm_identifier(
+            ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA384"
+        )
+        tbs = _build(issuer_cert, subject_csr, signature_algorithm=sig_alg)
+        assert der_encoder(tbs["signature"]) == der_encoder(sig_alg)
+
+    def test_serial_provided_value_used(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr, serial=12345)
+        assert int(tbs["serialNumber"]) == 12345
+
+    def test_serial_random_when_not_provided(self, issuer_cert, subject_csr):
+        sig = _sig_alg()
+        t1 = _build(issuer_cert, subject_csr, signature_algorithm=sig)
+        t2 = _build(issuer_cert, subject_csr, signature_algorithm=sig)
+        assert int(t1["serialNumber"]) != int(t2["serialNumber"])
+
+    def test_serial_is_positive(self, issuer_cert, subject_csr):
+        """RFC 5280 §4.1.2.2: serialNumber MUST be a positive integer."""
+        sig = _sig_alg()
+        for _ in range(20):
+            tbs = _build(issuer_cert, subject_csr, signature_algorithm=sig)
+            assert int(tbs["serialNumber"]) > 0
+
+    def test_subject_from_csr(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        csr_subject_der = der_encoder(subject_csr["certificationRequestInfo"]["subject"])
+        assert der_encoder(tbs["subject"]) == csr_subject_der
+
+    def test_subjectPublicKeyInfo_from_csr(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        csr_spki_der = der_encoder(subject_csr["certificationRequestInfo"]["subjectPKInfo"])
+        assert der_encoder(tbs["subjectPublicKeyInfo"]) == csr_spki_der
+
+    def test_issuer_from_issuer_cert_when_provided(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        expected_issuer_der = der_encoder(issuer_cert["tbsCertificate"]["subject"])
+        assert der_encoder(tbs["issuer"]) == expected_issuer_der
+
+    def test_issuer_from_csr_subject_when_self_signed(self, issuer_self_csr):
+        """Self-signed root: issuer = subject (RFC 5280 §3.2)."""
+        tbs = _build(None, issuer_self_csr, days=3650)
+        assert der_encoder(tbs["issuer"]) == der_encoder(tbs["subject"])
+
+    def test_tbs_is_der_encodable(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        der = der_encoder(tbs)
+        decoded, _ = der_decoder(der, asn1Spec=rfc5280.TBSCertificate())
+        assert int(decoded["serialNumber"]) == int(tbs["serialNumber"])
+
+
+# =========================================================================
+# Validity (RFC 5280 §4.1.2.5)
+# =========================================================================
+
+class TestValidity:
+
+    def test_not_before_one_hour_before_now(self, issuer_cert, subject_csr):
+        now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        tbs = _build(issuer_cert, subject_csr, now=now)
+        from ca.crypto.util import asn1_time_to_datetime
+        not_before = asn1_time_to_datetime(tbs["validity"]["notBefore"])
+        assert not_before == now - timedelta(hours=1)
+
+    def test_not_after_days_after_now(self, issuer_cert, subject_csr):
+        now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        tbs = _build(issuer_cert, subject_csr, now=now)
+        from ca.crypto.util import asn1_time_to_datetime
+        not_after = asn1_time_to_datetime(tbs["validity"]["notAfter"])
+        assert not_after == now + timedelta(days=90)
+
+    def test_not_before_before_not_after(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr, days=1)
+        from ca.crypto.util import asn1_time_to_datetime
+        nb = asn1_time_to_datetime(tbs["validity"]["notBefore"])
+        na = asn1_time_to_datetime(tbs["validity"]["notAfter"])
+        assert nb < na
+
+
+# =========================================================================
+# Subject Key Identifier (RFC 5280 §4.2.1.2)
+# =========================================================================
+
+class TestSubjectKeyIdentifier:
+    """The project's chosen SKI generation: SHA-1 of the DER encoding of
+    the full SubjectPublicKeyInfo. RFC 5280 §4.2.1.2 specifies two
+    canonical methods (both hash only the subjectPublicKey BIT STRING),
+    but the section explicitly allows "other methods of generating unique
+    numbers". Consistency with already-issued certs (and their AKIs)
+    requires sticking with this method."""
+
+    def test_skid_extension_present(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        assert _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER) is not None
+
+    def test_skid_value_is_sha1_of_full_spki_der(self, issuer_cert, subject_csr, subject_key):
+        tbs = _build(issuer_cert, subject_csr)
+        skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
+        skid_value_decoded, _ = der_decoder(
+            skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier()
+        )
+        actual = bytes(skid_value_decoded)
+
+        spki_der = subject_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        # SHA-1 of the full DER-encoded SubjectPublicKeyInfo
+        expected = hashlib.sha1(spki_der).digest()
+
+        assert actual == expected
+        assert len(actual) == 20
+
+    def test_skid_length_is_20_bytes(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
+        decoded, _ = der_decoder(skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier())
+        assert len(bytes(decoded)) == 20
+
+    def test_skid_self_signed_matches_subject_spki(self, issuer_self_csr, issuer_key):
+        """For a self-signed root the SKI is computed from the cert's own
+        SPKI — which is also the issuer's SPKI."""
+        tbs = _build(None, issuer_self_csr, days=3650)
+        skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
+        skid_value_decoded, _ = der_decoder(
+            skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier()
+        )
+        actual = bytes(skid_value_decoded)
+
+        spki_der = issuer_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        expected = hashlib.sha1(spki_der).digest()
+        assert actual == expected
+
+
+# =========================================================================
+# Authority Key Identifier (RFC 5280 §4.2.1.1)
+# =========================================================================
+
+class TestAuthorityKeyIdentifier:
+
+    def test_akid_present_when_issuer_cert_provided(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr)
+        assert _get_ext(tbs, OID_AUTHORITY_KEY_IDENTIFIER) is not None
+
+    def test_akid_absent_for_self_signed(self, issuer_self_csr):
+        """RFC 5280 §4.2.1.1: self-signed certs MAY omit AKI."""
+        tbs = _build(None, issuer_self_csr, days=3650)
+        assert _get_ext(tbs, OID_AUTHORITY_KEY_IDENTIFIER) is None
+
+    def test_akid_matches_issuer_skid(self, issuer_cert, issuer_key, subject_csr):
+        """RFC 5280 §4.2.1.1: the keyIdentifier in AKI of the issued cert
+        must match the SKI of the issuer."""
+        tbs = _build(issuer_cert, subject_csr)
+        akid_ext = _get_ext(tbs, OID_AUTHORITY_KEY_IDENTIFIER)
+        akid_decoded, _ = der_decoder(akid_ext["extnValue"], asn1Spec=rfc5280.AuthorityKeyIdentifier())
+        akid_kid = bytes(akid_decoded["keyIdentifier"])
+
+        issuer_pub_der = issuer_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        expected = hashlib.sha1(issuer_pub_der).digest()
+
+        assert akid_kid == expected
+
+    def test_raises_when_issuer_lacks_skid(self, issuer_key, subject_csr):
+        """If we're told to chain to an issuer cert but that cert has no
+        SKI, we cannot construct a valid AKI -> hard fail."""
+        issuer_no_skid = _build_issuer_cert(
+            issuer_key, cn="Bad Issuer", include_skid=False,
+            aia_ext=_make_aia_ext(), crldp_ext=_make_crldp_ext(),
+        )
+        with pytest.raises(CryptoException):
+            _build(issuer_no_skid, subject_csr)
+
+
+# =========================================================================
+# Requested-extension carry-over from CSR
+# =========================================================================
+
+class TestRequestedExtensionsCarryover:
+
+    def test_basic_constraints_carried_from_csr(self, issuer_cert, subject_key):
+        bc_ext = _make_basic_constraints_ext(ca=True, path_len=2)
+        csr = _build_csr(subject_key, "With BC", extensions=[bc_ext])
+        tbs = _build(issuer_cert, csr)
+        ext = _get_ext(tbs, OID_BASIC_CONSTRAINTS)
+        assert ext is not None
+        bc_decoded, _ = der_decoder(ext["extnValue"], asn1Spec=rfc5280.BasicConstraints())
+        assert bool(bc_decoded["cA"]) is True
+        assert int(bc_decoded["pathLenConstraint"]) == 2
+
+    def test_multiple_extensions_carried(self, issuer_cert, subject_key):
+        bc = _make_basic_constraints_ext()
+        ku = rfc5280.Extension()
+        ku["extnID"] = univ.ObjectIdentifier(OID_KEY_USAGE)
+        ku["critical"] = True
+        ku_val = rfc5280.KeyUsage("100000000")  # digitalSignature
+        ku["extnValue"] = univ.OctetString(der_encoder(ku_val))
+        csr = _build_csr(subject_key, "Multi", extensions=[bc, ku])
+        tbs = _build(issuer_cert, csr)
+        assert _get_ext(tbs, OID_BASIC_CONSTRAINTS) is not None
+        assert _get_ext(tbs, OID_KEY_USAGE) is not None
+
+    def test_ca_cert_carries_aia_crldp_from_csr(self, issuer_cert, subject_key):
+        """CA certs source AIA/CRLDP from the CSR's requested extensions
+        (their own config). build_tbs_certificate doesn't add or
+        deduplicate AIA/CRLDP when is_ca=True."""
+        aia = _make_aia_ext("http://ocsp.intermediate.example.com")
+        crldp = _make_crldp_ext("http://crl.intermediate.example.com/x.crl")
+        bc = _make_basic_constraints_ext(ca=True, path_len=0)
+        csr = _build_csr(subject_key, "Intermediate", extensions=[bc, aia, crldp])
+
+        tbs = _build(issuer_cert, csr, is_ca=True)
+        oids = _all_ext_oids(tbs)
+        assert oids.count(OID_AUTHORITY_INFO_ACCESS) == 1
+        assert oids.count(OID_CRL_DISTRIBUTION_POINTS) == 1
+
+    def test_ca_cert_no_double_aia_crldp_with_explicit_kwargs(self, issuer_cert, subject_key):
+        """RFC 5280 §4.2: 'A certificate MUST NOT include more than one
+        instance of a particular extension.' Passing the same extensions
+        both via CSR and via the explicit kwargs would have duplicated
+        them; is_ca=True must ignore the explicit kwargs."""
+        aia = _make_aia_ext("http://ocsp.intermediate.example.com")
+        crldp = _make_crldp_ext("http://crl.intermediate.example.com/x.crl")
+        bc = _make_basic_constraints_ext(ca=True, path_len=0)
+        csr = _build_csr(subject_key, "Intermediate", extensions=[bc, aia, crldp])
+
+        tbs = _build(
+            issuer_cert, csr, is_ca=True,
+            authority_info_access_ext=_make_aia_ext("http://ocsp.other.example.com"),
+            crl_distribution_points_ext=_make_crldp_ext("http://crl.other.example.com/y.crl"),
+        )
+        oids = _all_ext_oids(tbs)
+        assert oids.count(OID_AUTHORITY_INFO_ACCESS) == 1
+        assert oids.count(OID_CRL_DISTRIBUTION_POINTS) == 1
+
+
+# =========================================================================
+# Leaf-cert AIA / CRLDP handling
+# =========================================================================
+
+class TestLeafAuthorityInfoAccess:
+    """For leaf certs (is_ca=False), AIA is inherited from the issuer cert
+    by default, and an explicit kwarg overrides that. Matches main's
+    behavior in certificate.py:277-282."""
+
+    def test_inherited_from_issuer_when_not_given(self, issuer_cert, issuer_aia_ext, subject_csr):
+        tbs = _build(issuer_cert, subject_csr, is_ca=False)
+        aia_ext = _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS)
+        assert aia_ext is not None
+        assert bytes(aia_ext["extnValue"]) == bytes(issuer_aia_ext["extnValue"])
+
+    def test_explicit_used_when_issuer_lacks_it(self, issuer_key, subject_csr):
+        """If the issuer cert has no AIA, fall back to the explicit kwarg."""
+        issuer_no_aia = _build_issuer_cert(
+            issuer_key, include_skid=True, aia_ext=None, crldp_ext=_make_crldp_ext()
+        )
+        fallback = _make_aia_ext("http://ocsp.fallback.example.com")
+        tbs = _build(
+            issuer_no_aia, subject_csr, is_ca=False,
+            authority_info_access_ext=fallback,
+        )
+        aia_ext = _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS)
+        assert aia_ext is not None
+        assert bytes(aia_ext["extnValue"]) == bytes(fallback["extnValue"])
+
+    def test_issuer_aia_wins_over_explicit_kwarg(self, issuer_cert, issuer_aia_ext, subject_csr):
+        """When the issuer cert has an AIA, it's used; the explicit kwarg
+        is only a fallback. This matches main's behavior: issuer cert
+        first, config as fallback."""
+        other = _make_aia_ext("http://ocsp.other.example.com")
+        tbs = _build(
+            issuer_cert, subject_csr, is_ca=False,
+            authority_info_access_ext=other,
+        )
+        aia_ext = _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS)
+        assert aia_ext is not None
+        assert bytes(aia_ext["extnValue"]) == bytes(issuer_aia_ext["extnValue"])
+
+    def test_omitted_when_no_source(self, issuer_key, subject_csr):
+        """If neither the issuer cert nor the explicit kwarg provides
+        AIA, the leaf simply has no AIA — no error."""
+        issuer_no_aia = _build_issuer_cert(
+            issuer_key, include_skid=True, aia_ext=None, crldp_ext=None
+        )
+        tbs = _build(issuer_no_aia, subject_csr, is_ca=False)
+        assert _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS) is None
+
+
+class TestLeafCrlDistributionPoints:
+
+    def test_inherited_from_issuer_when_not_given(self, issuer_cert, issuer_crldp_ext, subject_csr):
+        tbs = _build(issuer_cert, subject_csr, is_ca=False)
+        crldp_ext = _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS)
+        assert crldp_ext is not None
+        assert bytes(crldp_ext["extnValue"]) == bytes(issuer_crldp_ext["extnValue"])
+
+    def test_explicit_used_when_issuer_lacks_it(self, issuer_key, subject_csr):
+        issuer_no_crldp = _build_issuer_cert(
+            issuer_key, include_skid=True, aia_ext=_make_aia_ext(), crldp_ext=None
+        )
+        fallback = _make_crldp_ext("http://crl.fallback.example.com/x.crl")
+        tbs = _build(
+            issuer_no_crldp, subject_csr, is_ca=False,
+            crl_distribution_points_ext=fallback,
+        )
+        crldp_ext = _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS)
+        assert crldp_ext is not None
+        assert bytes(crldp_ext["extnValue"]) == bytes(fallback["extnValue"])
+
+    def test_omitted_when_no_source(self, issuer_key, subject_csr):
+        issuer_no_crldp = _build_issuer_cert(
+            issuer_key, include_skid=True, aia_ext=None, crldp_ext=None
+        )
+        tbs = _build(issuer_no_crldp, subject_csr, is_ca=False)
+        assert _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS) is None
+
+
+# =========================================================================
+# is_ca gating: builder must not add AIA/CRLDP to CA certs
+# =========================================================================
+
+class TestIsCaGating:
+
+    def test_ca_with_no_aia_in_csr_has_no_aia(self, issuer_cert, subject_csr):
+        """subject_csr's BC is set but it has no AIA/CRLDP. With
+        is_ca=True the builder does not add either."""
+        tbs = _build(issuer_cert, subject_csr, is_ca=True)
+        assert _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS) is None
+
+    def test_ca_with_no_crldp_in_csr_has_no_crldp(self, issuer_cert, subject_csr):
+        tbs = _build(issuer_cert, subject_csr, is_ca=True)
+        assert _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS) is None
+
+    def test_ca_explicit_kwargs_ignored(self, issuer_cert, subject_csr):
+        """The kwargs are only consulted on the leaf path. For CAs they
+        must not be added even if passed."""
+        tbs = _build(
+            issuer_cert, subject_csr, is_ca=True,
+            authority_info_access_ext=_make_aia_ext(),
+            crl_distribution_points_ext=_make_crldp_ext(),
+        )
+        assert _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS) is None
+        assert _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS) is None
+
+
+# =========================================================================
+# Self-signed root end-to-end (matches sign_csr's signer=None, is_ca=True)
+# =========================================================================
+
+class TestSelfSignedRoot:
+
+    def test_root_builds_with_aia_crldp_in_csr(self, issuer_key, issuer_aia_ext, issuer_crldp_ext):
+        """A root's AIA and CRLDP come through its own CSR's requested
+        extensions, matching create_csr's behavior."""
+        bc = _make_basic_constraints_ext(ca=True, path_len=2)
+        csr = _build_csr(issuer_key, "Root CA", extensions=[bc, issuer_aia_ext, issuer_crldp_ext])
+        tbs = _build(None, csr, is_ca=True, days=3650)
+
+        oids = _all_ext_oids(tbs)
+        assert OID_SUBJECT_KEY_IDENTIFIER in oids
+        assert OID_BASIC_CONSTRAINTS in oids
+        assert OID_AUTHORITY_INFO_ACCESS in oids
+        assert OID_CRL_DISTRIBUTION_POINTS in oids
+        assert OID_AUTHORITY_KEY_IDENTIFIER not in oids
+
+        # No duplicates of any extension
+        for oid in set(oids):
+            assert oids.count(oid) == 1, f"duplicate extension {oid}"
+
+        # And the whole thing must be encodable
+        assert der_encoder(tbs)
+
+    def test_root_without_aia_crldp_in_csr_still_builds(self, issuer_key):
+        """If the root's config has no AIA/CRLDP, the cert simply lacks
+        them — no exception. (Atypical but should not crash.)"""
+        bc = _make_basic_constraints_ext(ca=True, path_len=0)
+        csr = _build_csr(issuer_key, "Bare Root", extensions=[bc])
+        tbs = _build(None, csr, is_ca=True, days=3650)
+        assert _get_ext(tbs, OID_AUTHORITY_INFO_ACCESS) is None
+        assert _get_ext(tbs, OID_CRL_DISTRIBUTION_POINTS) is None
+        assert der_encoder(tbs)
+
+
+# =========================================================================
+# build_revoked_certificate_entry
+# =========================================================================
+
+class TestBuildRevokedCertificateEntry:
+
+    def _make_time(self, dt: datetime) -> rfc5280.Time:
+        from ca.crypto.util import get_ans1_time
+        return get_ans1_time(dt)
+
+    def test_serial_set(self):
+        entry = build_revoked_certificate_entry(
+            serial=rfc5280.CertificateSerialNumber(42),
+            revocation_time=self._make_time(datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            revocation_reason=rfc5280.CRLReason("keyCompromise"),
+        )
+        assert int(entry["userCertificate"]) == 42
+
+    def test_revocation_date_set(self):
+        dt = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        entry = build_revoked_certificate_entry(
+            serial=rfc5280.CertificateSerialNumber(1),
+            revocation_time=self._make_time(dt),
+            revocation_reason=rfc5280.CRLReason("unspecified"),
+        )
+        from ca.crypto.util import asn1_time_to_datetime
+        assert asn1_time_to_datetime(entry["revocationDate"]) == dt
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "unspecified", "keyCompromise", "cACompromise", "affiliationChanged",
+            "superseded", "cessationOfOperation", "certificateHold",
+            "privilegeWithdrawn", "aACompromise",
+        ],
+    )
+    def test_revocation_reason_encoded_correctly(self, reason):
+        entry = build_revoked_certificate_entry(
+            serial=rfc5280.CertificateSerialNumber(1),
+            revocation_time=self._make_time(datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            revocation_reason=rfc5280.CRLReason(reason),
+        )
+        ext = next(e for e in entry["crlEntryExtensions"] if str(e["extnID"]) == OID_CRL_REASON)
+        inner, _ = der_decoder(bytes(ext["extnValue"]), asn1Spec=rfc5280.CRLReason())
+        assert str(inner) == reason
+
+    def test_entry_is_der_encodable(self):
+        entry = build_revoked_certificate_entry(
+            serial=rfc5280.CertificateSerialNumber(1),
+            revocation_time=self._make_time(datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            revocation_reason=rfc5280.CRLReason("keyCompromise"),
+        )
+        der = der_encoder(entry)
+        decoded, _ = der_decoder(der, asn1Spec=RevokedCertificateEntry())
+        assert int(decoded["userCertificate"]) == 1
+
+
+# =========================================================================
+# build_tbs_cert_list (CRL)
+# =========================================================================
+
+class TestBuildTbsCertList:
+
+    def _entry(self, serial: int):
+        from ca.crypto.util import get_ans1_time
+        return build_revoked_certificate_entry(
+            serial=rfc5280.CertificateSerialNumber(serial),
+            revocation_time=get_ans1_time(datetime(2025, 6, 1, tzinfo=timezone.utc)),
+            revocation_reason=rfc5280.CRLReason("keyCompromise"),
+        )
+
+    def test_version_v2(self, issuer_cert):
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+        )
+        assert int(tbs["version"]) == CRL_VERSION  # v2 (encoded value 1)
+
+    def test_issuer_from_issuer_cert(self, issuer_cert):
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+        )
+        assert der_encoder(tbs["issuer"]) == der_encoder(issuer_cert["tbsCertificate"]["subject"])
+
+    def test_this_update_one_hour_before_now(self, issuer_cert):
+        now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+            now=now,
+        )
+        from ca.crypto.util import asn1_time_to_datetime
+        assert asn1_time_to_datetime(tbs["thisUpdate"]) == now - timedelta(hours=1)
+
+    def test_next_update_days_after_now(self, issuer_cert):
+        now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+            now=now,
+        )
+        from ca.crypto.util import asn1_time_to_datetime
+        assert asn1_time_to_datetime(tbs["nextUpdate"]) == now + timedelta(days=7)
+
+    def test_this_update_before_next_update(self, issuer_cert):
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=1,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+        )
+        from ca.crypto.util import asn1_time_to_datetime
+        assert asn1_time_to_datetime(tbs["thisUpdate"]) < asn1_time_to_datetime(tbs["nextUpdate"])
+
+    def test_revoked_entries_included(self, issuer_cert):
+        entries = [self._entry(1), self._entry(2), self._entry(3)]
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=entries,
+        )
+        serials = sorted(int(e["userCertificate"]) for e in tbs["revokedCertificates"])
+        assert serials == [1, 2, 3]
+
+    def test_empty_revoked_list_is_valid(self, issuer_cert):
+        """RFC 5280 §5.1.2.6: revokedCertificates is OPTIONAL — a CRL with
+        no revoked certificates must still be valid and DER-encodable."""
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=[],
+        )
+        der = der_encoder(tbs)
+        decoded, _ = der_decoder(der, asn1Spec=rfc5280.TBSCertList())
+        assert int(decoded["version"]) == CRL_VERSION
+
+    def test_signature_algorithm_set(self, issuer_cert):
+        sig = get_algorithm_identifier(
+            ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA384"
+        )
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert, days=7, signature_algorithm=sig,
+            revoked_certificate_entries=[],
+        )
+        assert der_encoder(tbs["signature"]) == der_encoder(sig)
+
+    def test_tbs_crl_round_trips_with_revoked_entries(self, issuer_cert):
+        entries = [self._entry(i) for i in (10, 20, 30)]
+        tbs = build_tbs_cert_list(
+            issuer_cert=issuer_cert,
+            days=7,
+            signature_algorithm=get_algorithm_identifier(
+                ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
+            ),
+            revoked_certificate_entries=entries,
+        )
+        der = der_encoder(tbs)
+        decoded, _ = der_decoder(der, asn1Spec=rfc5280.TBSCertList())
+        decoded_serials = sorted(int(e["userCertificate"]) for e in decoded["revokedCertificates"])
+        assert decoded_serials == [10, 20, 30]

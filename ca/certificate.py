@@ -8,9 +8,9 @@ from pyasn1_modules import rfc2986, rfc5280, rfc2315, rfc4055
 from pyasn1_modules.rfc5280 import CertificateList
 
 from ca.config import CertificateConfig
-from ca.crypto import build_certification_request_info, build_tbs_certificate, get_algorithm_identifier, build_tbs_cert_list, build_revoked_certificate_entry
+from ca.crypto.build import build_certification_request_info, build_revoked_certificate_entry, build_tbs_cert_list
 from ca.crypto.signer import Signer
-from ca.crypto.util import get_ans1_time
+from ca.crypto.util import get_ans1_time, get_algorithm_identifier
 from ca.database import IssuedCertificate
 from vism_lib.errors import VismBreakingException
 
@@ -107,8 +107,11 @@ class CertificateManager:
             csr=csr,
             days=days,
             signature_algorithm=get_algorithm_identifier(signer_public_key, self.CSR_SIGN_HASH_ALG),
-            authority_info_access_ext=self.config.x509.authority_info_access.to_asn1_ext() if is_ca and self.config.x509.authority_info_access else None,
-            crl_distribution_points_ext=self.config.x509.crl_distribution_points.to_asn1_ext() if is_ca and self.config.x509.crl_distribution_points else None
+            is_ca=is_ca,
+            authority_info_access_ext=self.config.x509.authority_info_access.to_asn1_ext()
+                if not is_ca and self.config.x509.authority_info_access else None,
+            crl_distribution_points_ext=self.config.x509.crl_distribution_points.to_asn1_ext()
+                if not is_ca and self.config.x509.crl_distribution_points else None,
         )
 
         ### Certificate ###

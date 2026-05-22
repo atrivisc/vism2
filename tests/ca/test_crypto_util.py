@@ -8,9 +8,9 @@ from pyasn1.codec.der import encoder, decoder
 from pyasn1.type import univ, useful
 from pyasn1_modules import rfc5280
 
-from ca.crypto import get_algorithm_identifier, get_extension_by_oid_from_certificate, generate_random_serial, \
+from ca.crypto.build import get_extension_by_oid_from_certificate, generate_random_serial, \
     get_ans1_time
-from ca.crypto.util import asn1_time_to_datetime
+from ca.crypto.util import asn1_time_to_datetime, get_algorithm_identifier
 
 OID_RSA_SHA256 = "1.2.840.113549.1.1.11"
 OID_RSA_SHA384 = "1.2.840.113549.1.1.12"
