@@ -3,12 +3,13 @@ import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
+from pyasn1.type import univ
 from pyasn1.type.base import Asn1Item
 from pyasn1_modules import rfc2986, rfc5280, rfc2315, rfc4055
 from pyasn1_modules.rfc5280 import CertificateList
 
 from ca.config import CertificateConfig
-from ca.crypto.build import build_certification_request_info, build_revoked_certificate_entry, build_tbs_cert_list
+from ca.crypto.build import build_certification_request_info, build_revoked_certificate_entry, build_tbs_cert_list, build_tbs_certificate
 from ca.crypto.signer import Signer
 from ca.crypto.util import get_ans1_time, get_algorithm_identifier
 from ca.database import IssuedCertificate
@@ -62,8 +63,9 @@ class CertificateManager:
                 f", but no certificate or CRL was provided in the config."
             )
 
-    def _sign_object(self, obj: Asn1Item, hash_alg: str) -> bytes:
-        return self.signer.sign(der_encoder(obj), hash_alg)
+    def _sign_object(self, obj: Asn1Item, hash_alg: str) -> univ.BitString:
+        signature_bytes = self.signer.sign(der_encoder(obj), hash_alg)
+        return univ.BitString.fromHexString(signature_bytes.hex())
 
     def create_csr(self) -> rfc2986.CertificationRequest:
         all_csr_extensions = [
@@ -96,9 +98,15 @@ class CertificateManager:
         return csr
 
     def sign_csr(self, signer: rfc5280.Certificate | None, csr: rfc2986.CertificationRequest, days: int, is_ca: bool) -> rfc5280.Certificate:
+        # build_tbs_certificate reads requested extensions by treating
+        # the CSR's AttributeValues as DER bytes (Any), which only works
+        # if the CSR has been through DER decoding. Round-trip here so
+        # callers don't need to think about CSR provenance.
+        csr = der_decoder(der_encoder(csr), asn1Spec=rfc2986.CertificationRequest())[0]
+
         if signer is not None:
-            signer_public_key_bytes = signer['tbsCertificate']['subjectPublicKeyInfo']['subjectPublicKey'].asOctets()
-            signer_public_key = serialization.load_der_public_key(signer_public_key_bytes)
+            signer_spki_der = der_encoder(signer['tbsCertificate']['subjectPublicKeyInfo'])
+            signer_public_key = serialization.load_der_public_key(signer_spki_der)
         else:
             signer_public_key = self.public_key
 
@@ -140,8 +148,8 @@ class CertificateManager:
             for issued_cert in revoked_certs
         ]
 
-        signer_public_key_bytes = signer['tbsCertificate']['subjectPublicKeyInfo']['subjectPublicKey'].asOctets()
-        signer_public_key = serialization.load_der_public_key(signer_public_key_bytes)
+        signer_spki_der = der_encoder(signer['tbsCertificate']['subjectPublicKeyInfo'])
+        signer_public_key = serialization.load_der_public_key(signer_spki_der)
 
         tbs_crl = build_tbs_cert_list(
             issuer_cert=signer,

@@ -982,3 +982,286 @@ class TestBuildTbsCertList:
         decoded, _ = der_decoder(der, asn1Spec=rfc5280.TBSCertList())
         decoded_serials = sorted(int(e["userCertificate"]) for e in decoded["revokedCertificates"])
         assert decoded_serials == [10, 20, 30]
+
+
+# =========================================================================
+# Chain structure (root -> intermediate -> leaf, unsigned)
+# =========================================================================
+
+def _wrap_as_cert(tbs: rfc5280.TBSCertificate) -> rfc5280.Certificate:
+    """Wrap a TBS as a full Certificate with a dummy signature so it can
+    be used as issuer_cert input to the next build_tbs_certificate call.
+    No cryptographic verification happens here — the goal is to test that
+    the data flows through the chain correctly."""
+    sig_alg = tbs["signature"]
+    cert = rfc5280.Certificate()
+    cert["tbsCertificate"] = tbs
+    cert["signatureAlgorithm"] = sig_alg
+    cert["signature"] = univ.BitString(hexValue="00")
+    # Encode + decode so subsequent reads of the cert don't mutate any
+    # CHOICE branches still being held by reference from the build.
+    return der_decoder(der_encoder(cert), asn1Spec=rfc5280.Certificate())[0]
+
+
+def _ski_of(cert: rfc5280.Certificate) -> bytes:
+    skid_ext = next(
+        e for e in cert["tbsCertificate"]["extensions"]
+        if str(e["extnID"]) == OID_SUBJECT_KEY_IDENTIFIER
+    )
+    decoded, _ = der_decoder(skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier())
+    return bytes(decoded)
+
+
+def _akid_of(tbs: rfc5280.TBSCertificate) -> bytes:
+    akid_ext = next(
+        e for e in tbs["extensions"]
+        if str(e["extnID"]) == OID_AUTHORITY_KEY_IDENTIFIER
+    )
+    decoded, _ = der_decoder(akid_ext["extnValue"], asn1Spec=rfc5280.AuthorityKeyIdentifier())
+    return bytes(decoded["keyIdentifier"])
+
+
+class TestChainStructure:
+    """Structural verification of a root -> intermediate -> leaf chain.
+    These tests do not check signatures — they verify that the issuer/
+    subject names, the SKI/AKI pairing, the AIA/CRLDP inheritance, and
+    the basic-constraints handling all line up correctly across cert
+    levels. Cryptographic chain validation belongs in test_certificate.py
+    where a real Signer test double exists."""
+
+    @pytest.fixture
+    def chain(self):
+        """Build a complete 3-level chain. Each cert in the chain has
+        distinct keys, names, AIA/CRLDP, and the appropriate is_ca flag."""
+        root_key = ec.generate_private_key(ec.SECP256R1())
+        intermediate_key = ec.generate_private_key(ec.SECP256R1())
+        leaf_key = ec.generate_private_key(ec.SECP256R1())
+
+        root_aia = _make_aia_ext("http://ocsp.root.example.com")
+        root_crldp = _make_crldp_ext("http://crl.root.example.com/root.crl")
+        intermediate_aia = _make_aia_ext("http://ocsp.intermediate.example.com")
+        intermediate_crldp = _make_crldp_ext("http://crl.intermediate.example.com/intermediate.crl")
+
+        # --- root: self-signed CA, AIA/CRLDP via its own CSR ---
+        root_csr = _build_csr(
+            root_key, "Root CA",
+            extensions=[
+                _make_basic_constraints_ext(ca=True, path_len=2),
+                root_aia, root_crldp,
+            ],
+        )
+        root_tbs = build_tbs_certificate(
+            issuer_cert=None, csr=root_csr, days=3650,
+            signature_algorithm=_sig_alg(), is_ca=True,
+        )
+        root_cert = _wrap_as_cert(root_tbs)
+
+        # --- intermediate: CA signed by root, AIA/CRLDP via its own CSR ---
+        intermediate_csr = _build_csr(
+            intermediate_key, "Intermediate CA",
+            extensions=[
+                _make_basic_constraints_ext(ca=True, path_len=0),
+                intermediate_aia, intermediate_crldp,
+            ],
+        )
+        intermediate_tbs = build_tbs_certificate(
+            issuer_cert=root_cert, csr=intermediate_csr, days=1825,
+            signature_algorithm=_sig_alg(), is_ca=True,
+        )
+        intermediate_cert = _wrap_as_cert(intermediate_tbs)
+
+        # --- leaf: end-entity signed by intermediate, no AIA/CRLDP in CSR ---
+        leaf_csr = _build_csr(
+            leaf_key, "leaf.example.com",
+            extensions=[_make_basic_constraints_ext(ca=False)],
+        )
+        leaf_tbs = build_tbs_certificate(
+            issuer_cert=intermediate_cert, csr=leaf_csr, days=90,
+            signature_algorithm=_sig_alg(), is_ca=False,
+        )
+        leaf_cert = _wrap_as_cert(leaf_tbs)
+
+        return {
+            "root_key": root_key, "root_cert": root_cert, "root_tbs": root_tbs,
+            "intermediate_key": intermediate_key, "intermediate_cert": intermediate_cert,
+            "intermediate_tbs": intermediate_tbs,
+            "leaf_key": leaf_key, "leaf_cert": leaf_cert, "leaf_tbs": leaf_tbs,
+            "root_aia": root_aia, "root_crldp": root_crldp,
+            "intermediate_aia": intermediate_aia, "intermediate_crldp": intermediate_crldp,
+        }
+
+    # --- issuer/subject linkage ---
+
+    def test_root_is_self_signed(self, chain):
+        """RFC 5280 §3.2: a self-signed root has issuer == subject."""
+        root = chain["root_cert"]["tbsCertificate"]
+        assert der_encoder(root["issuer"]) == der_encoder(root["subject"])
+
+    def test_intermediate_issuer_matches_root_subject(self, chain):
+        intermediate = chain["intermediate_cert"]["tbsCertificate"]
+        root = chain["root_cert"]["tbsCertificate"]
+        assert der_encoder(intermediate["issuer"]) == der_encoder(root["subject"])
+
+    def test_leaf_issuer_matches_intermediate_subject(self, chain):
+        leaf = chain["leaf_cert"]["tbsCertificate"]
+        intermediate = chain["intermediate_cert"]["tbsCertificate"]
+        assert der_encoder(leaf["issuer"]) == der_encoder(intermediate["subject"])
+
+    def test_chain_subjects_are_distinct(self, chain):
+        """Sanity check the fixture: all three certs have different
+        subjects, so the issuer/subject checks above aren't trivially
+        passing by collision."""
+        subjects = {
+            der_encoder(chain["root_cert"]["tbsCertificate"]["subject"]),
+            der_encoder(chain["intermediate_cert"]["tbsCertificate"]["subject"]),
+            der_encoder(chain["leaf_cert"]["tbsCertificate"]["subject"]),
+        }
+        assert len(subjects) == 3
+
+    # --- SKI / AKI pairing ---
+
+    def test_root_has_no_akid(self, chain):
+        """A self-signed root has no parent to point at via AKI."""
+        oids = _all_ext_oids(chain["root_cert"]["tbsCertificate"])
+        assert OID_AUTHORITY_KEY_IDENTIFIER not in oids
+
+    def test_intermediate_akid_matches_root_ski(self, chain):
+        """RFC 5280 §4.2.1.1: AKI of child == SKI of parent."""
+        assert _akid_of(chain["intermediate_tbs"]) == _ski_of(chain["root_cert"])
+
+    def test_leaf_akid_matches_intermediate_ski(self, chain):
+        assert _akid_of(chain["leaf_tbs"]) == _ski_of(chain["intermediate_cert"])
+
+    def test_all_three_skis_are_distinct(self, chain):
+        """Three distinct keys must yield three distinct SKIs."""
+        skis = {
+            _ski_of(chain["root_cert"]),
+            _ski_of(chain["intermediate_cert"]),
+            _ski_of(chain["leaf_cert"]),
+        }
+        assert len(skis) == 3
+
+    # --- public-key fidelity ---
+
+    def test_leaf_spki_matches_leaf_csr(self, chain):
+        """The cert's SPKI must come from the CSR's SPKI, not from
+        anywhere else in the chain."""
+        cert_spki = der_encoder(chain["leaf_cert"]["tbsCertificate"]["subjectPublicKeyInfo"])
+        leaf_pub = chain["leaf_key"].public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        assert cert_spki == leaf_pub
+
+    def test_intermediate_spki_matches_intermediate_csr(self, chain):
+        cert_spki = der_encoder(chain["intermediate_cert"]["tbsCertificate"]["subjectPublicKeyInfo"])
+        intermediate_pub = chain["intermediate_key"].public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        assert cert_spki == intermediate_pub
+
+    # --- AIA / CRLDP inheritance and gating ---
+
+    def test_intermediate_has_its_own_aia(self, chain):
+        """CA certs get AIA/CRLDP from their own CSR (matching their own
+        config in production), not inherited from the root."""
+        ext = next(
+            e for e in chain["intermediate_tbs"]["extensions"]
+            if str(e["extnID"]) == OID_AUTHORITY_INFO_ACCESS
+        )
+        assert bytes(ext["extnValue"]) == bytes(chain["intermediate_aia"]["extnValue"])
+
+    def test_intermediate_has_its_own_crldp(self, chain):
+        ext = next(
+            e for e in chain["intermediate_tbs"]["extensions"]
+            if str(e["extnID"]) == OID_CRL_DISTRIBUTION_POINTS
+        )
+        assert bytes(ext["extnValue"]) == bytes(chain["intermediate_crldp"]["extnValue"])
+
+    def test_leaf_inherits_intermediate_aia(self, chain):
+        """Leaf certs inherit AIA from their direct issuer (so verifiers
+        know where to find the cert that signed them)."""
+        ext = next(
+            e for e in chain["leaf_tbs"]["extensions"]
+            if str(e["extnID"]) == OID_AUTHORITY_INFO_ACCESS
+        )
+        assert bytes(ext["extnValue"]) == bytes(chain["intermediate_aia"]["extnValue"])
+
+    def test_leaf_inherits_intermediate_crldp(self, chain):
+        ext = next(
+            e for e in chain["leaf_tbs"]["extensions"]
+            if str(e["extnID"]) == OID_CRL_DISTRIBUTION_POINTS
+        )
+        assert bytes(ext["extnValue"]) == bytes(chain["intermediate_crldp"]["extnValue"])
+
+    def test_leaf_does_not_inherit_root_aia(self, chain):
+        """The leaf must point at the intermediate (its direct issuer),
+        not at the root. A leaf with the root's AIA would direct
+        verifiers to the wrong place."""
+        ext = next(
+            e for e in chain["leaf_tbs"]["extensions"]
+            if str(e["extnID"]) == OID_AUTHORITY_INFO_ACCESS
+        )
+        assert bytes(ext["extnValue"]) != bytes(chain["root_aia"]["extnValue"])
+
+    # --- no duplicate extensions anywhere in the chain ---
+
+    @pytest.mark.parametrize("cert_key", ["root_cert", "intermediate_cert", "leaf_cert"])
+    def test_no_duplicate_extensions(self, chain, cert_key):
+        """RFC 5280 §4.2: 'A certificate MUST NOT include more than one
+        instance of a particular extension.'"""
+        oids = _all_ext_oids(chain[cert_key]["tbsCertificate"])
+        duplicates = [o for o in set(oids) if oids.count(o) > 1]
+        assert duplicates == []
+
+    # --- basic constraints carryover ---
+
+    def test_root_is_ca_with_path_length(self, chain):
+        ext = next(
+            e for e in chain["root_cert"]["tbsCertificate"]["extensions"]
+            if str(e["extnID"]) == OID_BASIC_CONSTRAINTS
+        )
+        bc, _ = der_decoder(ext["extnValue"], asn1Spec=rfc5280.BasicConstraints())
+        assert bool(bc["cA"]) is True
+        assert int(bc["pathLenConstraint"]) == 2
+
+    def test_intermediate_is_ca_with_path_length_zero(self, chain):
+        """An intermediate with pathLenConstraint=0 may sign leafs but
+        not further CAs (RFC 5280 §4.2.1.9)."""
+        ext = next(
+            e for e in chain["intermediate_cert"]["tbsCertificate"]["extensions"]
+            if str(e["extnID"]) == OID_BASIC_CONSTRAINTS
+        )
+        bc, _ = der_decoder(ext["extnValue"], asn1Spec=rfc5280.BasicConstraints())
+        assert bool(bc["cA"]) is True
+        assert int(bc["pathLenConstraint"]) == 0
+
+    def test_leaf_is_not_ca(self, chain):
+        ext = next(
+            e for e in chain["leaf_cert"]["tbsCertificate"]["extensions"]
+            if str(e["extnID"]) == OID_BASIC_CONSTRAINTS
+        )
+        bc, _ = der_decoder(ext["extnValue"], asn1Spec=rfc5280.BasicConstraints())
+        assert bool(bc["cA"]) is False
+
+    # --- serials ---
+
+    def test_serial_numbers_distinct_across_chain(self, chain):
+        serials = {
+            int(chain["root_cert"]["tbsCertificate"]["serialNumber"]),
+            int(chain["intermediate_cert"]["tbsCertificate"]["serialNumber"]),
+            int(chain["leaf_cert"]["tbsCertificate"]["serialNumber"]),
+        }
+        assert len(serials) == 3
+
+    # --- full encodability ---
+
+    @pytest.mark.parametrize("cert_key", ["root_cert", "intermediate_cert", "leaf_cert"])
+    def test_each_cert_round_trips_through_der(self, chain, cert_key):
+        der = der_encoder(chain[cert_key])
+        decoded, _ = der_decoder(der, asn1Spec=rfc5280.Certificate())
+        assert (
+            int(decoded["tbsCertificate"]["serialNumber"])
+            == int(chain[cert_key]["tbsCertificate"]["serialNumber"])
+        )
