@@ -93,19 +93,20 @@ class Certificate:
     def _get_algorithm_identifier(self, hash_algorithm_name: str) -> rfc5280.AlgorithmIdentifier:
         algorithm_identifier = rfc5280.AlgorithmIdentifier()
         if self.priv_key.key_type == pkcs11.KeyType.RSA:
-            if self.p11_client.is_pss_supported:
-                template = _rsa_pss_map[hash_algorithm_name.upper()]
-
-                params_der = der_encoder(template['parameters'])
-                pss_params, _ = der_decoder(params_der, asn1Spec=rfc4055.RSASSA_PSS_params())
-                pss_params['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
-
-                algorithm_identifier['algorithm'] = template['algorithm']
-                algorithm_identifier['parameters'] = univ.Any(der_encoder(pss_params))
-                return algorithm_identifier
-            else:
-                algorithm_oid = SignatureAlgorithmOID().__getattribute__(
-                    f'RSA_WITH_{hash_algorithm_name}').dotted_string
+            # Note: Explicitly disabling RSA-PSS support for now due to windows crypto api lack of support
+            # I hate micosoft so much
+            # if self.p11_client.is_pss_supported:
+            #     template = _rsa_pss_map[hash_algorithm_name.upper()]
+            #
+            #     params_der = der_encoder(template['parameters'])
+            #     pss_params, _ = der_decoder(params_der, asn1Spec=rfc4055.RSASSA_PSS_params())
+            #     pss_params['saltLength'] = hashlib.new(hash_algorithm_name).digest_size
+            #
+            #     algorithm_identifier['algorithm'] = template['algorithm']
+            #     algorithm_identifier['parameters'] = univ.Any(der_encoder(pss_params))
+            #     return algorithm_identifier
+            # else:
+            algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'RSA_WITH_{hash_algorithm_name}').dotted_string
         elif self.priv_key.key_type == pkcs11.KeyType.EC:
             algorithm_oid = SignatureAlgorithmOID().__getattribute__(f'ECDSA_WITH_{hash_algorithm_name}').dotted_string
         else:
