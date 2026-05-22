@@ -1,3 +1,4 @@
+import hashlib
 from operator import getitem
 from typing import TypeVar
 
@@ -72,33 +73,30 @@ class PKCS11Client(KeysProtocol):
         return real_attrs
 
     def _get_mechanism(self, key_type: pkcs11.KeyType, hash_alg: str) -> tuple[pkcs11.Mechanism | None, tuple | None]:
-        mechanism_parameters = None
         if key_type == pkcs11.KeyType.RSA:
-            # rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS_PSS")
-            # if rsa_mech not in self.supported_mechanisms:
-            #     rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
-            # else:
-            #     hash_mech = Mechanism.__getitem__(hash_alg.upper())
-            #     mgf = MGF.__getitem__(hash_alg.upper())
-            #     salt_len = hashlib.new(hash_alg.upper()).digest_size
-            #     mechanism_parameters = (hash_mech,mgf,salt_len)
-
-            rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
-            return rsa_mech, mechanism_parameters
+            return Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS"), None
         elif key_type == pkcs11.KeyType.EC:
-            return Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}"), mechanism_parameters
-        else:
-            return None, None
+            combined = Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}")
+            if combined in self.supported_mechanisms:
+                return combined, None
+            return Mechanism.ECDSA, None  # caller must pre-hash
+        return None, None
 
-    def sign_data(self, privkey: PKCS11PrivKey, data: bytes, hash_alg_name: str) -> bytes:
+    def sign_data(self, privkey, data, hash_alg_name):
         with self.token.open(rw=True, user_pin=self.config.user_pin) as session:
             privkey_obj = self._get_raw_object(session, pkcs11.ObjectClass.PRIVATE_KEY, privkey.label)
             if privkey_obj is None:
                 raise ValueError(f"No private key found with label: {privkey.label}")
 
             mechanism, mechanism_params = self._get_mechanism(privkey.key_type, hash_alg_name)
-            signature = privkey_obj.sign(data, mechanism=mechanism, mechanism_param=mechanism_params)
 
+            # Bare ECDSA expects the hash, not the raw data
+            if mechanism == pkcs11.Mechanism.ECDSA:
+                h = hashlib.new(hash_alg_name.lower())
+                h.update(data)
+                data = h.digest()
+
+            signature = privkey_obj.sign(data, mechanism=mechanism, mechanism_param=mechanism_params)
             return signature
 
     def generate_or_load_keypair(self, pub_key: PKCS11PubKey, priv_key: PKCS11PrivKey) -> tuple[PKCS11PubKey, PKCS11PrivKey]:

@@ -194,7 +194,8 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
     def to_asn1(self):
         basic_constraints = rfc5280.BasicConstraints()
         basic_constraints.setComponentByName("cA", self.ca)
-        basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
+        if self.ca:
+            basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
 
         return basic_constraints
 
@@ -209,20 +210,29 @@ class X509ConfigSubjectAlternativeName(X509ConfigExtension):
     emails: list[str] = None
 
     def to_asn1(self):
+        import ipaddress as _ipaddress
+
         subject_alt_names = rfc5280.SubjectAltName()
         for ip in self.ips or []:
+            packed = _ipaddress.ip_address(ip).packed
             name = rfc5280.GeneralName()
-            name.setComponentByName("iPAddress", univ.OctetString(ip))
+            name["iPAddress"] = univ.OctetString(packed).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 7)
+            )
             subject_alt_names.append(name)
 
         for dn in self.dns or []:
             name = rfc5280.GeneralName()
-            name.setComponentByName("dNSName", char.IA5String(dn))
+            name["dNSName"] = char.IA5String(dn).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 2)
+            )
             subject_alt_names.append(name)
 
         for email in self.emails or []:
             name = rfc5280.GeneralName()
-            name.setComponentByName("rfc822Name", char.IA5String(email))
+            name["rfc822Name"] = char.IA5String(email).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 1)
+            )
             subject_alt_names.append(name)
 
         return subject_alt_names
@@ -320,7 +330,7 @@ class X509ConfigDistributionPoint:
         if self.reasons:
             reasons = rfc5280.ReasonFlags(
                 "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
-            )
+            ).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 1))
             dp["reasons"] = reasons
 
         return dp
