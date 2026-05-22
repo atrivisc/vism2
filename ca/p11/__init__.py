@@ -1,16 +1,17 @@
-import hashlib
 from operator import getitem
-from typing import TypeVar
+from typing import TypeVar, Protocol, Any
 
 import pkcs11
 from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive,  Mechanism, MGF
+
+from ca.abc import KeysProtocol
 from ca.config import PKCS11Config
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
 from vism_lib.config import shared_logger
 
 ObjectT = TypeVar('ObjectT', bound=pkcs11.Object)
 
-class PKCS11Client:
+class PKCS11Client(KeysProtocol):
     def __init__(self, config: PKCS11Config):
         self.config = config
         self.p11 = pkcs11.lib(config.lib_path)
@@ -19,7 +20,8 @@ class PKCS11Client:
         self.supported_mechanisms = self.token.slot.get_mechanisms()
         self.is_pss_supported = Mechanism.RSA_PKCS_PSS in self.supported_mechanisms
 
-    def _get_raw_object(self, session: Session, obj_class: pkcs11.ObjectClass, label: str) -> ObjectT:
+    @staticmethod
+    def _get_raw_object(session: Session, obj_class: pkcs11.ObjectClass, label: str) -> ObjectT | None:
         shared_logger.debug(f"Getting object {obj_class.name} {label}")
         objects = list(session.get_objects({
             pkcs11.Attribute.CLASS: obj_class,
@@ -99,7 +101,7 @@ class PKCS11Client:
 
             return signature
 
-    def generate_keypair(self, pub_key: PKCS11PubKey, priv_key: PKCS11PrivKey) -> tuple[PKCS11PubKey, PKCS11PrivKey]:
+    def generate_or_load_keypair(self, pub_key: PKCS11PubKey, priv_key: PKCS11PrivKey) -> tuple[PKCS11PubKey, PKCS11PrivKey]:
         with self.token.open(rw=True, user_pin=self.config.user_pin) as session:
             p11_pubkey, p11_privkey = self._get_key_pair(session, priv_key, pub_key)
 

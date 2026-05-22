@@ -17,3 +17,6 @@ class GenCRLException(VismException):
 
 class CertConfigNotFound(VismException):
     """Raised when a certificate config cannot be found."""
+
+class CryptoException(VismException):
+    """Raised when a crypto operation fails."""

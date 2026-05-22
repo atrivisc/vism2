@@ -107,15 +107,6 @@ class PKCS11Config:
     token_label: str
     user_pin: str
 
-    @field_validator("lib_path")
-    @classmethod
-    def validate_lib_path(cls, v: str):
-        """Validate PKCS#11 library path."""
-        if not os.path.exists(v):
-            raise ValueError(f"PKCS#11 library path '{v}' does not exist")
-
-        return v
-
 @dataclass
 class X509ConfigSubjectName:
     """X509 subject name configuration."""

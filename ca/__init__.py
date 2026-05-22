@@ -1,10 +1,10 @@
 # pylint: disable=missing-module-docstring
 
-from .certificate import Certificate
+from .certificate import CertificateManager
 from .main import VismCA, main
 
 __all__ = [
     'main',
-    'Certificate',
+    'CertificateManager',
     'VismCA'
 ]

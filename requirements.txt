@@ -13,3 +13,5 @@ uvicorn==0.47.0
 aiormq==6.9.4
 vism-lib==0.2.1
 yaml-pydantic-dataclass==0.1.2
+psycopg2==2.9.12
+python-pkcs11==0.9.4
