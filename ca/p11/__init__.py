@@ -72,15 +72,16 @@ class PKCS11Client:
     def _get_mechanism(self, key_type: pkcs11.KeyType, hash_alg: str) -> tuple[pkcs11.Mechanism | None, tuple | None]:
         mechanism_parameters = None
         if key_type == pkcs11.KeyType.RSA:
-            rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS_PSS")
-            if rsa_mech not in self.supported_mechanisms:
-                rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
-            else:
-                hash_mech = Mechanism.__getitem__(hash_alg.upper())
-                mgf = MGF.__getitem__(hash_alg.upper())
-                salt_len = hashlib.new(hash_alg.upper()).digest_size
-                mechanism_parameters = (hash_mech,mgf,salt_len)
+            # rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS_PSS")
+            # if rsa_mech not in self.supported_mechanisms:
+            #     rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
+            # else:
+            #     hash_mech = Mechanism.__getitem__(hash_alg.upper())
+            #     mgf = MGF.__getitem__(hash_alg.upper())
+            #     salt_len = hashlib.new(hash_alg.upper()).digest_size
+            #     mechanism_parameters = (hash_mech,mgf,salt_len)
 
+            rsa_mech = Mechanism.__getitem__(f"{hash_alg.upper()}_RSA_PKCS")
             return rsa_mech, mechanism_parameters
         elif key_type == pkcs11.KeyType.EC:
             return Mechanism.__getitem__(f"ECDSA_{hash_alg.upper()}"), mechanism_parameters
