@@ -30,7 +30,7 @@ class IssuedCertificate(Base):
     subject: Mapped[bytes] = mapped_column(LargeBinary)
 
     ca_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey('certificate.id'), init=False)
-    ca: Mapped['CertificateEntity'] = relationship("CertificateEntity", lazy="joined", default=None)
+    ca: Mapped['CertificateEntity'] = relationship("CertificateEntity", back_populates="issued_certificates", lazy="joined", default=None)
 
     revocation_date: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     revocation_reason: Mapped[str] = mapped_column(String(128), nullable=True, default=None)

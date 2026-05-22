@@ -48,7 +48,7 @@ class VismCA(Controller):
     async def update_crl(self):
         pass
 
-    async def revoke_certificates(self, serial: int | str, reason: ValidRevocationReasons):
+    async def revoke_certificates(self, serial: int | str, reason: ValidRevocationReasons, *, now: datetime | None = None):
         ca_logger.info(f"Revoking certificate with the serial: {serial} with reason: {reason}")
         issued_certificate = self.database.get_issued_certificate_by_serial(serial)
         if issued_certificate is None:
@@ -59,7 +59,7 @@ class VismCA(Controller):
 
         issued_certificate.status_flag = "r"
         issued_certificate.revocation_reason = reason.value
-        issued_certificate.revocation_date = datetime.now(timezone.utc)
+        issued_certificate.revocation_date = now or datetime.now(timezone.utc)
 
         self.database.save_to_db(issued_certificate)
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
@@ -191,7 +191,8 @@ class VismCA(Controller):
                     f"CSR: \n{csr_pem}"
                 )
 
-        issuer_asn1_cert = der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        issuer_asn1_cert = der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0] if issuer_db_entity.crt_der is not None else None
+
         issuing_cert = issuer_cert or cert
         if db_entry.crt_der is None:
             ca_logger.info(f"Creating certificate {cert.config.name}, signed by {issuing_cert.config.name}")
@@ -215,6 +216,14 @@ class VismCA(Controller):
             db_entry.crl_der = der_encoder(crl)
 
         return issuer_db_entity, db_entry
+
+    async def load_certificate_crl(self, cert: CertificateManager, cert_asn1: rfc5280.Certificate, db_entry: CertificateEntity, revoked_certs: list[IssuedCertificate]) -> CertificateEntity:
+        if db_entry.crl_der is None:
+            ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
+            crl = cert.create_crl(cert_asn1, revoked_certs)
+            db_entry.crl_der = der_encoder(crl)
+
+        return db_entry
 
     async def load_certificates(self) -> dict[str, CertificateManager]:
         ca_logger.info("Initializing certificates")
@@ -252,6 +261,8 @@ class VismCA(Controller):
             )
 
             issuer_db_entity, db_entry = await self.load_certificate(cert, db_entry, issuer_cert, issuer_db_entity)
+            revoked_cert = self.database.get_revoked_certificates_for_issuer(db_entry.id)
+            db_entry = await self.load_certificate_crl(cert, der_decoder(db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0], db_entry, revoked_cert)
 
             await self.save_certificate(cert.config.name, db_entry)
 

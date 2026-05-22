@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from pyasn1.type import univ, useful
 from pyasn1_modules import rfc5280
 
-_signature_algorithm_map: dict[tuple[type[rsa.RSAPublicKey], str] | tuple[type[ec.EllipticCurvePublicKey], str], str] = {
+_signature_algorithm_map: dict[tuple[type, str], str] = {
     (rsa.RSAPublicKey, 'SHA256'): SignatureAlgorithmOID.RSA_WITH_SHA256.dotted_string,
     (rsa.RSAPublicKey, 'SHA384'): SignatureAlgorithmOID.RSA_WITH_SHA384.dotted_string,
     (rsa.RSAPublicKey, 'SHA512'): SignatureAlgorithmOID.RSA_WITH_SHA512.dotted_string,
@@ -15,9 +15,16 @@ _signature_algorithm_map: dict[tuple[type[rsa.RSAPublicKey], str] | tuple[type[e
     (ec.EllipticCurvePublicKey, 'SHA512'): SignatureAlgorithmOID.ECDSA_WITH_SHA512.dotted_string,
 }
 
+def _resolve_key_type(public_key: rsa.RSAPublicKey | ec.EllipticCurvePublicKey) -> type:
+    if isinstance(public_key, rsa.RSAPublicKey):
+        return rsa.RSAPublicKey
+    if isinstance(public_key, ec.EllipticCurvePublicKey):
+        return ec.EllipticCurvePublicKey
+    raise KeyError(type(public_key))
+
 def get_algorithm_identifier(public_key: rsa.RSAPublicKey | ec.EllipticCurvePublicKey, hash_algorithm_name: str) -> rfc5280.AlgorithmIdentifier:
     algorithm_identifier = rfc5280.AlgorithmIdentifier()
-    algorithm_oid = _signature_algorithm_map[(public_key.__class__, hash_algorithm_name)]
+    algorithm_oid = _signature_algorithm_map[(_resolve_key_type(public_key), hash_algorithm_name)]
     algorithm_identifier["algorithm"] = univ.ObjectIdentifier(algorithm_oid)
     return algorithm_identifier
 
@@ -33,10 +40,13 @@ def generate_random_serial() -> int:
     return secrets.randbits(159)
 
 def asn1_time_to_datetime(asn1_time: rfc5280.Time) -> datetime:
-    if asn1_time['utcTime'].hasValue():
-        return asn1_time['utcTime'].asDateTime()
+    chosen = asn1_time.getName()
+    if chosen == 'utcTime':
+        return asn1_time['utcTime'].asDateTime
+    elif chosen == 'generalTime':
+        return asn1_time['generalTime'].asDateTime
     else:
-        return asn1_time['generalTime'].asDateTime()
+        raise ValueError(f"Time CHOICE has no active component (got {chosen!r})")
 
 def get_ans1_time(dt: datetime) -> rfc5280.Time:
     time = rfc5280.Time()

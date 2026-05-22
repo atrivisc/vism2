@@ -1,8 +1,8 @@
 from operator import getitem
-from typing import TypeVar, Protocol, Any
+from typing import TypeVar
 
 import pkcs11
-from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive,  Mechanism, MGF
+from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive,  Mechanism
 
 from ca.abc import KeysProtocol
 from ca.config import PKCS11Config

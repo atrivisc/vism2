@@ -93,7 +93,8 @@ def build_tbs_certificate(
         *,
         serial: int | None = None,
         authority_info_access_ext: rfc5280.Extension | None = None,
-        crl_distribution_points_ext: rfc5280.Extension | None = None
+        crl_distribution_points_ext: rfc5280.Extension | None = None,
+        now: datetime | None = None,
 ) -> rfc5280.TBSCertificate:
     csr_info = csr.getComponentByName("certificationRequestInfo")
 
@@ -102,7 +103,7 @@ def build_tbs_certificate(
     ### Validity ###
     validity = rfc5280.Validity()
 
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
 
     not_before_time = now - timedelta(hours=1)
     not_after_time = now + timedelta(days=days)
@@ -139,22 +140,20 @@ def build_tbs_certificate(
     ### Authority Information Access ###
     if not authority_info_access_ext and issuer_cert:
         authority_info_access_ext = get_extension_by_oid_from_certificate(issuer_cert, x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string)
-        if authority_info_access_ext is None:
-            raise CryptoException(f"Issuer certificate does not contain authority information access extension.")
-
-        extensions.append(authority_info_access_ext)
     elif not authority_info_access_ext and not issuer_cert:
         raise CryptoException("Issuer certificate not provided and no authority information access extension found in CSR.")
+
+    if authority_info_access_ext:
+        extensions.append(authority_info_access_ext)
 
     ### CRL Distribution Points ###
     if not crl_distribution_points_ext and issuer_cert:
         crl_distribution_points_ext = get_extension_by_oid_from_certificate(issuer_cert, x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string)
-        if crl_distribution_points_ext is None:
-            raise CryptoException(f"Issuer certificate does not contain CRL distribution points extension.")
-
-        extensions.append(crl_distribution_points_ext)
     elif not crl_distribution_points_ext and not issuer_cert:
         raise CryptoException("Issuer certificate not provided and no CRL distribution points extension found in CSR.")
+
+    if crl_distribution_points_ext:
+        extensions.append(crl_distribution_points_ext)
 
     if serial is None:
         serial = generate_random_serial()
@@ -175,7 +174,11 @@ def build_tbs_cert_list(
         days: int,
         signature_algorithm: rfc5280.AlgorithmIdentifier,
         revoked_certificate_entries: list[RevokedCertificateEntry],
+        *,
+        now: datetime | None = None
 ) -> rfc5280.TBSCertList:
+    now = now or datetime.now(timezone.utc)
+
     tbs_crl = rfc5280.TBSCertList()
 
     signature_algorithm = signature_algorithm
@@ -188,8 +191,8 @@ def build_tbs_cert_list(
     tbs_crl["signature"] = signature_algorithm
 
     tbs_crl["issuer"] = issuer_cert["tbsCertificate"]["subject"]
-    tbs_crl["thisUpdate"] = get_ans1_time(datetime.now(timezone.utc) - timedelta(hours=1))
-    tbs_crl["nextUpdate"] = get_ans1_time(datetime.now(timezone.utc) + timedelta(days=days))
+    tbs_crl["thisUpdate"] = get_ans1_time(now - timedelta(hours=1))
+    tbs_crl["nextUpdate"] = get_ans1_time(now + timedelta(days=days))
     tbs_crl["revokedCertificates"] = revoked_certificates
 
     return tbs_crl
