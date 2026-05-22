@@ -66,7 +66,7 @@ class VismCA(Controller):
         csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
 
         issuer = self.certificates[message.ca_name]
-        signed_cert_der = await issuer.sign_csr(csr_der_bytes, message.days)
+        signed_cert_der = await issuer.sign_csr(csr_der_bytes, message.days, is_ca=False)
         signed_cert_pem = x509.load_der_x509_certificate(signed_cert_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
         chain = signed_cert_pem + '\n' + issuer.pem_chain
 

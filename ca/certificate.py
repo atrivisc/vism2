@@ -169,7 +169,7 @@ class Certificate:
 
         return der_encoder(csr)
 
-    async def sign_csr(self, csr_der: bytes, days: int) -> bytes:
+    async def sign_csr(self, csr_der: bytes, days: int, is_ca: bool) -> bytes:
         csr: rfc2986.CertificationRequest = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())[0]
         csr_info = csr.getComponentByName("certificationRequestInfo")
 
@@ -213,15 +213,12 @@ class Certificate:
             extensions.append(akid_extension)
 
         ### Requested Extensions ###
-        is_ca = False
         csr_attributes: rfc2986.Attributes = csr_info.getComponentByName("attributes")
         ext_req_attr = next(filter(lambda attr: attr['type'] == univ.ObjectIdentifier("1.2.840.113549.1.9.14"), csr_attributes), None)
         if ext_req_attr:
             requested_extensions = ext_req_attr['values']
             for ext_oct in requested_extensions:
                 for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
-                    if ext.oid == x509.oid.ExtensionOID.BASIC_CONSTRAINTS and ext.value.ca:
-                        is_ca = True
                     extensions.append(ext)
 
         # TODO: For these pull the extensions from crt in db not config?
@@ -380,7 +377,7 @@ class Certificate:
         if self.config.signed_by is None:
             if self.db_entry.crt_der is None:
                 csr_der = await self._create_csr()
-                crt_der = await self.sign_csr(csr_der, self.config.x509.days)
+                crt_der = await self.sign_csr(csr_der, self.config.x509.days, is_ca=True)
 
                 self.db_entry.crt_der = crt_der
 
@@ -393,7 +390,7 @@ class Certificate:
         if self.issuer:
             if self.db_entry.crt_der is None:
                 csr_der = await self._create_csr()
-                crt_der = await self.issuer.sign_csr(csr_der, self.config.x509.days)
+                crt_der = await self.issuer.sign_csr(csr_der, self.config.x509.days, is_ca=True)
                 self.db_entry.crt_der = crt_der
 
                 await self.issuer.verify_issued_by(crt_der)
