@@ -171,6 +171,8 @@ class Certificate:
         return der_encoder(csr)
 
     async def sign_csr(self, csr_der: bytes, days: int, is_ca: bool) -> bytes:
+        issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0] if self.db_entry.crt_der is not None else None
+
         csr: rfc2986.CertificationRequest = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())[0]
         csr_info = csr.getComponentByName("certificationRequestInfo")
 
@@ -202,13 +204,18 @@ class Certificate:
         extensions.append(skid_extension)
 
         ### Authority Key Identifier ###
-        akid_extension = rfc5280.Extension()
-        akid_key_hash = hashlib.sha1(self.pub_key.public_bytes()).digest()
+        if issuer_cert:
+            issuer_skid_ext = next(filter(lambda e: e['extnID'] == x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
 
-        if skid_key_hash != akid_key_hash:
+            if not issuer_skid_ext:
+                raise VismBreakingException(f"Issuer certificate '{self.config.name}' does not contain subject key identifier extension.")
+
+            skid = der_decoder(issuer_skid_ext['extnValue'], asn1Spec=rfc5280.SubjectKeyIdentifier())[0]
+
             akid = rfc5280.AuthorityKeyIdentifier()
-            akid['keyIdentifier'] = akid_key_hash
+            akid['keyIdentifier'] = skid['keyIdentifier']
 
+            akid_extension = rfc5280.Extension()
             akid_extension["extnID"] = x509.OID_AUTHORITY_KEY_IDENTIFIER.dotted_string
             akid_extension["extnValue"] = der_encoder(akid)
             extensions.append(akid_extension)
@@ -222,19 +229,23 @@ class Certificate:
                 for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
                     extensions.append(ext)
 
-        # TODO: For these pull the extensions from crt in db not config?
         ### Authority Information Access ###
         if not is_ca:
-            extensions.append(self.config.x509.authority_info_access.to_asn1_ext())
+            issuer_aia_ext = next(filter(lambda e: e['extnID'] == x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
+            if issuer_aia_ext:
+                extensions.append(issuer_aia_ext)
+            else:
+                extensions.append(self.config.x509.authority_info_access.to_asn1_ext())
 
         ### CRL Distribution Points ###
         if not is_ca:
-            extensions.append(self.config.x509.crl_distribution_points.to_asn1_ext())
+            crl_dist_ext = next(filter(lambda e: e['extnID'] == x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string, issuer_cert["tbsCertificate"]["extensions"]), None)
+            if crl_dist_ext:
+                extensions.append(crl_dist_ext)
+            else:
+                extensions.append(self.config.x509.crl_distribution_points.to_asn1_ext())
 
-        # Not the most elegant, but it solves the problem of someone changing the config
-        issuer_cert = der_decoder(self.db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
         tbs_cert["issuer"] = issuer_cert["tbsCertificate"]["subject"]
-
         tbs_cert["version"] = self.CERT_VERSION
         tbs_cert["serialNumber"] = rfc5280.CertificateSerialNumber(random.getrandbits(159))
         tbs_cert["signature"] = signature_algorithm
