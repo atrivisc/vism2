@@ -1,18 +1,41 @@
 import asyncio
-from typing import Protocol, Any, Callable, Awaitable
+from typing import Protocol, Any, Callable, Awaitable, TypeVar
 
 type AsyncCallable = Callable[[], Awaitable]
 
-class KeysProtocol(Protocol):
-
-    def sign_data(self, privkey: Any, data: bytes, hash_alg_name: str) -> bytes: ...
-
-    def generate_or_load_keypair(self, pub_key: Any, priv_key: Any) -> tuple[Any, Any]: ...
-
-class Signer(Protocol):
-    def sign(self, data: bytes, hash_algorithm: str) -> bytes:
-        """Returns raw signature bytes."""
+class Key(Protocol):
+    @property
+    def label(self) -> str:
         ...
+
+    @property
+    def id(self) -> str:
+        ...
+
+    @property
+    def key_type(self) -> Any:
+        ...
+
+    @property
+    def key_length(self) -> int:
+        ...
+
+class PrivateKey(Key, Protocol):
+    ...
+
+class PublicKey(Key, Protocol):
+    def public_bytes(self) -> bytes:
+        """Returns der encoded public key bytes."""
+        ...
+
+PrivKeyT = TypeVar("PrivKeyT", bound=PrivateKey, contravariant=True)
+PubKeyT = TypeVar("PubKeyT", bound=PublicKey, contravariant=True)
+
+class KeyManager(Protocol[PrivKeyT, PubKeyT]):
+
+    def sign_data_with_key(self, privkey: PrivKeyT, data: bytes, hash_alg_name: str) -> bytes: ...
+
+    def generate_or_load_keypair(self, pub_key: PubKeyT, priv_key: PrivKeyT) -> tuple[PubKeyT, PrivKeyT]: ...
 
 class Election(Protocol):
     shutdown_event: asyncio.Event

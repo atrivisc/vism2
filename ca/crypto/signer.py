@@ -11,7 +11,7 @@ class PKCS11Signer(Signer):
         self._privkey = privkey
 
     def sign(self, data: bytes, hash_algorithm: str) -> bytes:
-        signature_bytes = self._p11_client.sign_data(self._privkey, data, hash_algorithm)
+        signature_bytes = self._p11_client.sign_data_with_key(self._privkey, data, hash_algorithm)
 
         # p11 returns a raw signature for EC, so we need to encode it
         if self._privkey.key_type == pkcs11.KeyType.EC:

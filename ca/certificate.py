@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import cryptography
 import cryptography.exceptions
 from cryptography import x509
@@ -9,9 +11,9 @@ from pyasn1.type.base import Asn1Item
 from pyasn1_modules import rfc2986, rfc5280, rfc2315, rfc4055
 from pyasn1_modules.rfc5280 import CertificateList
 
+from ca.abc import KeyManager, PrivateKey, PublicKey
 from ca.config import CertificateConfig
 from ca.crypto.build import build_certification_request_info, build_revoked_certificate_entry, build_tbs_cert_list, build_tbs_certificate
-from ca.crypto.signer import Signer
 from ca.crypto.util import get_ans1_time, get_algorithm_identifier
 from ca.database import IssuedCertificate
 from vism_lib.errors import VismBreakingException
@@ -47,16 +49,18 @@ class CertificateManager:
     CRT_SIGN_HASH_ALG = "SHA384"
     CRL_SIGN_HASH_ALG = "SHA384"
 
-    def __init__(self, signer: Signer, config: CertificateConfig, public_key_bytes: bytes):
-        self.signer = signer
-        self.config = config
+    def __init__(self, key_manager: KeyManager, privkey: PrivateKey, pubkey: PublicKey, config: CertificateConfig):
+        self._privkey = privkey
+        self._pubkey = pubkey
+        self._key_manager = key_manager
 
-        self.public_key_bytes = public_key_bytes
+        self.config = config
+        self.public_key_bytes = pubkey.public_bytes()
 
         try:
-            self.public_key = serialization.load_der_public_key(public_key_bytes)
+            self.public_key = serialization.load_der_public_key(self.public_key_bytes)
         except (ValueError, cryptography.exceptions.UnsupportedAlgorithm):
-            self.public_key = serialization.load_pem_public_key(public_key_bytes)
+            self.public_key = serialization.load_pem_public_key(self.public_key_bytes)
 
         if self.config.externally_managed and (self.config.certificate_pem is None or self.config.crl_pem is None):
             raise VismBreakingException(
@@ -65,7 +69,7 @@ class CertificateManager:
             )
 
     def _sign_object(self, obj: Asn1Item, hash_alg: str) -> univ.BitString:
-        signature_bytes = self.signer.sign(der_encoder(obj), hash_alg)
+        signature_bytes = self._key_manager.sign_data_with_key(self._privkey, der_encoder(obj), hash_alg)
         return univ.BitString.fromHexString(signature_bytes.hex())
 
     def create_csr(self) -> rfc2986.CertificationRequest:
@@ -98,7 +102,15 @@ class CertificateManager:
 
         return csr
 
-    def sign_csr(self, signer: rfc5280.Certificate | None, csr: rfc2986.CertificationRequest, days: int, is_ca: bool) -> rfc5280.Certificate:
+    def sign_csr(
+            self,
+            signer: rfc5280.Certificate | None,
+            csr: rfc2986.CertificationRequest,
+            days: int,
+            is_ca: bool,
+            *,
+            now: datetime | None = None
+    ) -> rfc5280.Certificate:
         # build_tbs_certificate reads requested extensions by treating
         # the CSR's AttributeValues as DER bytes (Any), which only works
         # if the CSR has been through DER decoding. Round-trip here so
@@ -121,6 +133,7 @@ class CertificateManager:
                 if not is_ca and self.config.x509.authority_info_access else None,
             crl_distribution_points_ext=self.config.x509.crl_distribution_points.to_asn1_ext()
                 if not is_ca and self.config.x509.crl_distribution_points else None,
+            now=now
         )
 
         ### Certificate ###
@@ -144,11 +157,7 @@ class CertificateManager:
     def load_external_crl_der(self) -> bytes:
         return x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
 
-    def issue_self_or_signed(self, issuer: "CertificateManager", issuer_cert_asn1: rfc5280.Certificate | None) -> rfc5280.Certificate:
-        csr = self.create_csr()
-        return issuer.sign_csr(issuer_cert_asn1, csr, self.config.x509.days, is_ca=False)
-
-    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate]) -> CertificateList:
+    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate], *, now: datetime | None = None) -> CertificateList:
         revoked_cert_entries = [
             build_revoked_certificate_entry(
                 serial=der_decoder(issued_cert.serial, asn1Spec=rfc2315.SerialNumber())[0],
@@ -165,7 +174,8 @@ class CertificateManager:
             issuer_cert=signer,
             days=self.config.x509.crl_days,
             signature_algorithm=get_algorithm_identifier(signer_public_key, self.CRL_SIGN_HASH_ALG),
-            revoked_certificate_entries=revoked_cert_entries
+            revoked_certificate_entries=revoked_cert_entries,
+            now=now
         )
 
         signature_algorithm = get_algorithm_identifier(signer_public_key, self.CRL_SIGN_HASH_ALG)

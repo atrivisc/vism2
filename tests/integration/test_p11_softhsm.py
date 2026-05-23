@@ -315,7 +315,7 @@ class TestPKCS11ClientSigning:
     def test_ec_sign_returns_bytes(self, p11_client, requires_ec):
         pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-sign"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
-        sig = p11_client.sign_data(loaded_priv, b"hello world", "SHA384")
+        sig = p11_client.sign_data_with_key(loaded_priv, b"hello world", "SHA384")
         assert isinstance(sig, bytes)
         assert len(sig) > 0
 
@@ -325,7 +325,7 @@ class TestPKCS11ClientSigning:
         PKCS11Signer converts this to DER before passing it up."""
         pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-rawsig"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
-        sig = p11_client.sign_data(loaded_priv, b"hello world", "SHA384")
+        sig = p11_client.sign_data_with_key(loaded_priv, b"hello world", "SHA384")
         # P-256: 32-byte r + 32-byte s
         assert len(sig) == 64
 
