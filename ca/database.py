@@ -1,9 +1,3 @@
-"""
-Database module for Vism CA.
-
-This module provides database models and operations for the Vism CA,
-including certificate entities and database management.
-"""
 from datetime import datetime
 from typing import Optional
 from pyasn1.codec.der.encoder import encode as der_encoder
@@ -65,7 +59,7 @@ class CertificateEntity(Base):
     issued_certificates: Mapped[list[IssuedCertificate]] = relationship(
         "IssuedCertificate",
         back_populates="ca",
-        lazy="select",
+        lazy="selectin",
         cascade="all, delete-orphan",
         default_factory=list
     )

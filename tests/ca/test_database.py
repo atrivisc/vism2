@@ -6,26 +6,9 @@ from uuid import uuid4
 import pytest
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1_modules import rfc5280
-from sqlalchemy import create_engine
 
-from ca.database import CertificateEntity, IssuedCertificate, VismCADatabase
-from vism_lib.data.validation import DataValidation
+from ca.database import CertificateEntity, IssuedCertificate
 from vism_lib.errors import VismBreakingException, VismException
-
-@pytest.fixture
-def db() -> VismCADatabase:
-    from sqlalchemy import event as sa_event
-
-    engine = create_engine("sqlite:///:memory:")
-
-    @sa_event.listens_for(engine, "connect")
-    def _enable_fk(dbapi_conn, _connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    validation = DataValidation(validation_key="test-validation-key")
-    return VismCADatabase(engine, validation)
 
 
 def _root_cert(**overrides) -> CertificateEntity:

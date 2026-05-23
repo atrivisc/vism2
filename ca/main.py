@@ -218,6 +218,10 @@ class VismCA(Controller):
 
         if db_entry.crt_der is None:
             self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
+            issuer_asn1_cert = (
+                der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
+                if issuer_db_entity.crt_der is not None else None
+            )
 
         if db_entry.crl_der is None:
             self._issue_crl(cert, issuer_cert, db_entry, issuer_asn1_cert, now=now)
@@ -235,7 +239,6 @@ class VismCA(Controller):
             expiration_date=asn1_time_to_datetime(crt['tbsCertificate']["validity"]["notAfter"]),
             serial=der_encoder(crt['tbsCertificate']["serialNumber"]),
             subject=der_encoder(crt['tbsCertificate']["subject"]),
-            ca=issuer_db_entity,
         ))
 
     def _issue_crl(self, cert, issuer_cert, db_entry, issuer_asn1_cert, *, now: datetime | None = None):

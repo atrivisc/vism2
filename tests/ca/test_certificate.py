@@ -5,14 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.type import univ
 from pyasn1_modules import rfc2986, rfc5280
 
-from ca.abc import KeyManager, PrivateKey, Key, PublicKey
 from ca.certificate import CertificateManager
 from ca.config import (
     CertificateConfig,
@@ -32,6 +31,13 @@ from ca.config import (
 from ca.database import IssuedCertificate
 from vism_lib.errors import VismBreakingException
 
+from tests.ca._helpers import (
+    LocalKeyManager,
+    LocalPrivKey,
+    LocalPubKey,
+    make_external_leaf_csr as _make_external_leaf_csr,
+)
+
 
 OID_SUBJECT_KEY_IDENTIFIER = "2.5.29.14"
 OID_AUTHORITY_KEY_IDENTIFIER = "2.5.29.35"
@@ -42,100 +48,8 @@ OID_CRL_DISTRIBUTION_POINTS = "2.5.29.31"
 
 
 # =========================================================================
-# Test doubles
+# Config helpers
 # =========================================================================
-
-class LocalPrivKey(PrivateKey, Key):
-    """In-memory PrivateKey that satisfies the abc.PrivateKey protocol.
-    Wraps a cryptography private key so LocalKeyManager can sign with it."""
-
-    def __init__(self, crypto_key, label: str = "test-priv", key_id: bytes = b"test-id"):
-        self._crypto_key = crypto_key
-        self._label = label
-        self._id = key_id
-
-    @property
-    def label(self) -> str:
-        return self._label
-
-    @property
-    def id(self) -> bytes:
-        return self._id
-
-    @property
-    def key_type(self):
-        if isinstance(self._crypto_key, ec.EllipticCurvePrivateKey):
-            return "EC"
-        if isinstance(self._crypto_key, rsa.RSAPrivateKey):
-            return "RSA"
-        return "UNKNOWN"
-
-    @property
-    def key_length(self) -> int:
-        if isinstance(self._crypto_key, rsa.RSAPrivateKey):
-            return self._crypto_key.key_size
-        return self._crypto_key.curve.key_size
-
-
-class LocalPubKey(PublicKey, Key):
-    """In-memory PublicKey that satisfies the abc.PublicKey protocol."""
-
-    def __init__(self, crypto_key, label: str = "test-pub", key_id: bytes = b"test-id"):
-        self._crypto_key = crypto_key
-        self._label = label
-        self._id = key_id
-
-    @property
-    def label(self) -> str:
-        return self._label
-
-    @property
-    def id(self) -> bytes:
-        return self._id
-
-    @property
-    def key_type(self):
-        if isinstance(self._crypto_key, ec.EllipticCurvePublicKey):
-            return "EC"
-        if isinstance(self._crypto_key, rsa.RSAPublicKey):
-            return "RSA"
-        return "UNKNOWN"
-
-    @property
-    def key_length(self) -> int:
-        if isinstance(self._crypto_key, rsa.RSAPublicKey):
-            return self._crypto_key.key_size
-        return self._crypto_key.curve.key_size
-
-    def public_bytes(self) -> bytes:
-        return self._crypto_key.public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-
-
-class LocalKeyManager(KeyManager[LocalPrivKey, LocalPubKey]):
-    """In-memory KeyManager test double. Signs using the cryptography
-    private key stored inside the LocalPrivKey. Produces signatures in
-    the same format PKCS11Client.sign_data_with_key does (DER ECDSA,
-    raw RSA) so CertificateManager doesn't have to care which backend
-    is in use."""
-
-    _HASHES = {"SHA256": hashes.SHA256, "SHA384": hashes.SHA384, "SHA512": hashes.SHA512}
-
-    def sign_data_with_key(self, privkey: LocalPrivKey, data: bytes, hash_alg_name: str) -> bytes:
-        hash_cls = self._HASHES[hash_alg_name]
-        crypto_key = privkey._crypto_key
-        if isinstance(crypto_key, ec.EllipticCurvePrivateKey):
-            return crypto_key.sign(data, ec.ECDSA(hash_cls()))
-        if isinstance(crypto_key, rsa.RSAPrivateKey):
-            from cryptography.hazmat.primitives.asymmetric import padding
-            return crypto_key.sign(data, padding.PKCS1v15(), hash_cls())
-        raise NotImplementedError(f"Unsupported key type: {type(crypto_key)}")
-
-    def generate_or_load_keypair(self, pub_key: LocalPubKey, priv_key: LocalPrivKey) -> tuple[LocalPubKey, LocalPrivKey]:
-        # Tests build the keypair themselves
-        return pub_key, priv_key
 
 def _subject(cn: str, country: str = "EE", organization: str = "Test Org") -> X509ConfigSubjectName:
     return X509ConfigSubjectName(
@@ -205,33 +119,6 @@ def _make_manager(name: str, x509_cfg: X509Config, key: ec.EllipticCurvePrivateK
         pubkey=pubkey,
         config=_cert_config(name, x509_cfg),
     )
-
-
-def _make_external_leaf_csr(
-    key: ec.EllipticCurvePrivateKey,
-    cn: str,
-    dns: list[str] | None = None,
-) -> rfc2986.CertificationRequest:
-    builder = x509.CertificateSigningRequestBuilder().subject_name(
-        x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, cn)])
-    )
-    if dns:
-        builder = builder.add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(d) for d in dns]),
-            critical=False,
-        )
-    builder = builder.add_extension(
-        x509.BasicConstraints(ca=False, path_length=None), critical=True
-    ).add_extension(
-        x509.KeyUsage(
-            digital_signature=True, content_commitment=False,
-            key_encipherment=True, data_encipherment=False, key_agreement=False,
-            key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False,
-        ),
-        critical=True,
-    )
-    csr_pem = builder.sign(key, hashes.SHA384()).public_bytes(serialization.Encoding.DER)
-    return der_decoder(csr_pem, asn1Spec=rfc2986.CertificationRequest())[0]
 
 
 # =========================================================================
