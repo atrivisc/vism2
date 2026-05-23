@@ -9,10 +9,9 @@ from pyasn1_modules import rfc5280
 from vism_lib.rabbitmq import RabbitMQClient
 from vism_lib.s3 import AsyncS3Client
 
-from ca import CertificateManager
 from ca.abc import AsyncCallable, Election, KeyManager
+from ca.certificate import CertificateManager
 from ca.config import CAConfig, ca_logger, ValidRevocationReasons, CertificateConfig
-from ca.crypto.signer import PKCS11Signer
 from ca.crypto.util import asn1_time_to_datetime, csr_pem_to_der, crt_der_to_pem, csr_der_to_pem, crt_der_chain_to_pem_chain
 from ca.database import VismCADatabase, CertificateEntity, IssuedCertificate
 from vism_lib.controller import Controller, load_data_exchange_module
