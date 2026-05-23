@@ -12,6 +12,7 @@ from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.type import univ
 from pyasn1_modules import rfc2986, rfc5280
 
+from ca.abc import KeyManager, PrivateKey, Key, PublicKey
 from ca.certificate import CertificateManager
 from ca.config import (
     CertificateConfig,
@@ -44,20 +45,97 @@ OID_CRL_DISTRIBUTION_POINTS = "2.5.29.31"
 # Test doubles
 # =========================================================================
 
-class LocalSigner:
+class LocalPrivKey(PrivateKey, Key):
+    """In-memory PrivateKey that satisfies the abc.PrivateKey protocol.
+    Wraps a cryptography private key so LocalKeyManager can sign with it."""
+
+    def __init__(self, crypto_key, label: str = "test-priv", key_id: bytes = b"test-id"):
+        self._crypto_key = crypto_key
+        self._label = label
+        self._id = key_id
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def id(self) -> bytes:
+        return self._id
+
+    @property
+    def key_type(self):
+        if isinstance(self._crypto_key, ec.EllipticCurvePrivateKey):
+            return "EC"
+        if isinstance(self._crypto_key, rsa.RSAPrivateKey):
+            return "RSA"
+        return "UNKNOWN"
+
+    @property
+    def key_length(self) -> int:
+        if isinstance(self._crypto_key, rsa.RSAPrivateKey):
+            return self._crypto_key.key_size
+        return self._crypto_key.curve.key_size
+
+
+class LocalPubKey(PublicKey, Key):
+    """In-memory PublicKey that satisfies the abc.PublicKey protocol."""
+
+    def __init__(self, crypto_key, label: str = "test-pub", key_id: bytes = b"test-id"):
+        self._crypto_key = crypto_key
+        self._label = label
+        self._id = key_id
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def id(self) -> bytes:
+        return self._id
+
+    @property
+    def key_type(self):
+        if isinstance(self._crypto_key, ec.EllipticCurvePublicKey):
+            return "EC"
+        if isinstance(self._crypto_key, rsa.RSAPublicKey):
+            return "RSA"
+        return "UNKNOWN"
+
+    @property
+    def key_length(self) -> int:
+        if isinstance(self._crypto_key, rsa.RSAPublicKey):
+            return self._crypto_key.key_size
+        return self._crypto_key.curve.key_size
+
+    def public_bytes(self) -> bytes:
+        return self._crypto_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+
+
+class LocalKeyManager(KeyManager[LocalPrivKey, LocalPubKey]):
+    """In-memory KeyManager test double. Signs using the cryptography
+    private key stored inside the LocalPrivKey. Produces signatures in
+    the same format PKCS11Client.sign_data_with_key does (DER ECDSA,
+    raw RSA) so CertificateManager doesn't have to care which backend
+    is in use."""
+
     _HASHES = {"SHA256": hashes.SHA256, "SHA384": hashes.SHA384, "SHA512": hashes.SHA512}
 
-    def __init__(self, private_key):
-        self._key = private_key
-
-    def sign(self, data: bytes, hash_algorithm: str) -> bytes:
-        hash_cls = self._HASHES[hash_algorithm]
-        if isinstance(self._key, ec.EllipticCurvePrivateKey):
-            return self._key.sign(data, ec.ECDSA(hash_cls()))
-        if isinstance(self._key, rsa.RSAPrivateKey):
+    def sign_data_with_key(self, privkey: LocalPrivKey, data: bytes, hash_alg_name: str) -> bytes:
+        hash_cls = self._HASHES[hash_alg_name]
+        crypto_key = privkey._crypto_key
+        if isinstance(crypto_key, ec.EllipticCurvePrivateKey):
+            return crypto_key.sign(data, ec.ECDSA(hash_cls()))
+        if isinstance(crypto_key, rsa.RSAPrivateKey):
             from cryptography.hazmat.primitives.asymmetric import padding
-            return self._key.sign(data, padding.PKCS1v15(), hash_cls())
-        raise NotImplementedError(f"Unsupported key type: {type(self._key)}")
+            return crypto_key.sign(data, padding.PKCS1v15(), hash_cls())
+        raise NotImplementedError(f"Unsupported key type: {type(crypto_key)}")
+
+    def generate_or_load_keypair(self, pub_key: LocalPubKey, priv_key: LocalPrivKey) -> tuple[LocalPubKey, LocalPrivKey]:
+        # Tests build the keypair themselves; this just echoes back.
+        return pub_key, priv_key
 
 
 def _subject(cn: str, country: str = "EE", organization: str = "Test Org") -> X509ConfigSubjectName:
@@ -120,14 +198,13 @@ def _cert_config(name: str, x509_cfg: X509Config) -> CertificateConfig:
 
 
 def _make_manager(name: str, x509_cfg: X509Config, key: ec.EllipticCurvePrivateKey) -> CertificateManager:
-    pub_bytes = key.public_key().public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
+    privkey = LocalPrivKey(key, label=f"{name}-priv")
+    pubkey = LocalPubKey(key.public_key(), label=f"{name}-pub")
     return CertificateManager(
-        signer=LocalSigner(key),
+        key_manager=LocalKeyManager(),
+        privkey=privkey,
+        pubkey=pubkey,
         config=_cert_config(name, x509_cfg),
-        public_key_bytes=pub_bytes,
     )
 
 
@@ -217,60 +294,64 @@ def intermediate_manager(intermediate_key) -> CertificateManager:
 class TestCertificateManagerInit:
 
     def test_loads_der_public_key(self, root_key):
-        pub_der = root_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
+        """The new constructor takes a PublicKey whose public_bytes()
+        returns DER. CertificateManager parses those bytes into a
+        cryptography public key."""
+        privkey = LocalPrivKey(root_key)
+        pubkey = LocalPubKey(root_key.public_key())
         mgr = CertificateManager(
-            signer=LocalSigner(root_key),
+            key_manager=LocalKeyManager(),
+            privkey=privkey,
+            pubkey=pubkey,
             config=_cert_config("root", _ca_x509_config("Root")),
-            public_key_bytes=pub_der,
         )
         assert isinstance(mgr.public_key, ec.EllipticCurvePublicKey)
 
-    def test_loads_pem_public_key(self, root_key):
-        """The constructor accepts PEM as well as DER, falling back if
-        DER parsing fails."""
-        pub_pem = root_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
+    def test_falls_back_to_pem_loader(self, root_key):
+        """CertificateManager.__init__ tries load_der_public_key first,
+        then load_pem_public_key. Documents the fallback: any PublicKey
+        implementation returning PEM bytes still works."""
+
+        class PemPubKey(LocalPubKey):
+            def public_bytes(self) -> bytes:
+                return self._crypto_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+
+        privkey = LocalPrivKey(root_key)
+        pubkey = PemPubKey(root_key.public_key())
         mgr = CertificateManager(
-            signer=LocalSigner(root_key),
+            key_manager=LocalKeyManager(),
+            privkey=privkey,
+            pubkey=pubkey,
             config=_cert_config("root", _ca_x509_config("Root")),
-            public_key_bytes=pub_pem,
         )
         assert isinstance(mgr.public_key, ec.EllipticCurvePublicKey)
 
     def test_externally_managed_requires_cert_and_crl(self, root_key):
         """Externally-managed certs need both certificate_pem and crl_pem
         in their config."""
-        pub_der = root_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
         cfg = _cert_config("ext", _ca_x509_config("External"))
         cfg.externally_managed = True
         with pytest.raises(VismBreakingException):
             CertificateManager(
-                signer=LocalSigner(root_key),
+                key_manager=LocalKeyManager(),
+                privkey=LocalPrivKey(root_key),
+                pubkey=LocalPubKey(root_key.public_key()),
                 config=cfg,
-                public_key_bytes=pub_der,
             )
 
     def test_externally_managed_with_both_pems_ok(self, root_key):
-        pub_der = root_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
         cfg = _cert_config("ext", _ca_x509_config("External"))
         cfg.externally_managed = True
         cfg.certificate_pem = "dummy"
         cfg.crl_pem = "dummy"
         mgr = CertificateManager(
-            signer=LocalSigner(root_key),
+            key_manager=LocalKeyManager(),
+            privkey=LocalPrivKey(root_key),
+            pubkey=LocalPubKey(root_key.public_key()),
             config=cfg,
-            public_key_bytes=pub_der,
         )
         assert mgr.config.externally_managed is True
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import secrets
 import shutil
 import subprocess
 import textwrap
@@ -33,8 +32,6 @@ from ca.config import (
     X509ConfigKeyUsage,
     X509ConfigSubjectName,
 )
-from ca.crypto.signer import PKCS11Signer
-from ca.p11 import PKCS11Client
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
 
 
@@ -181,7 +178,7 @@ def p11_client(p11_config):
     """A single PKCS11Client shared across the session. pkcs11.lib()
     caches the library handle globally so it's fine — and cheaper than
     reconnecting per test."""
-    from ca.p11 import PKCS11Client
+    from ca.p11.client import PKCS11Client
     return PKCS11Client(p11_config)
 
 
@@ -308,9 +305,15 @@ class TestPublicKeySerialization:
 # =========================================================================
 
 class TestPKCS11ClientSigning:
-    """Test the low-level sign_data interface — bytes in, raw signature
-    out. The PKCS11Signer wrapper handles algorithm-specific formatting
-    on top of this."""
+    """PKCS11Client.sign_data_with_key handles algorithm-specific output
+    formatting internally — for EC, it takes the raw r||s that PKCS#11
+    returns and converts it to a DER-encoded ECDSA signature (which is
+    what cryptography.x509.Certificate expects). For RSA, the signature
+    is passed through unchanged.
+
+    The behavior used to live in a separate PKCS11Signer wrapper; that
+    class is gone in v0.3.0 and these tests now target the client
+    directly."""
 
     def test_ec_sign_returns_bytes(self, p11_client, requires_ec):
         pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-sign"))
@@ -319,29 +322,29 @@ class TestPKCS11ClientSigning:
         assert isinstance(sig, bytes)
         assert len(sig) > 0
 
-    def test_ec_sign_returns_raw_concat_format(self, p11_client, requires_ec):
-        """PKCS#11 returns ECDSA signatures as r||s concatenation (NOT
-        DER-encoded). For P-256, that's exactly 64 bytes (32 + 32).
-        PKCS11Signer converts this to DER before passing it up."""
-        pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-rawsig"))
+    def test_ec_sign_returns_der_encoded_signature(self, p11_client, requires_ec):
+        """sign_data_with_key for EC converts the raw r||s from PKCS#11
+        into a DER ECDSA signature before returning. DER SEQUENCE starts
+        with tag 0x30."""
+        pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-dersig"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
         sig = p11_client.sign_data_with_key(loaded_priv, b"hello world", "SHA384")
-        # P-256: 32-byte r + 32-byte s
-        assert len(sig) == 64
-
-
-class TestPKCS11Signer:
-    """PKCS11Signer wraps PKCS11Client.sign_data and converts the raw
-    r||s output to a DER-encoded ECDSA signature, which is what
-    cryptography.x509.Certificate expects."""
+        # DER SEQUENCE tag
+        assert sig[0] == 0x30
+        # DER ECDSA signatures over P-256 are typically 70-72 bytes
+        # (varies with high-bit padding of r/s). Loose sanity check.
+        assert 64 < len(sig) < 80
 
     @pytest.mark.parametrize("hash_alg", ["SHA256", "SHA384", "SHA512"])
     def test_ec_signature_verifies_via_cryptography(self, p11_client, requires_ec, hash_alg):
+        """End-to-end: a signature produced by PKCS11Client must verify
+        via the cryptography library against the same public key. This
+        is the highest-value EC test — catches the DER conversion logic
+        in one go."""
         pub_desc, priv_desc = _ec_keypair_objects(_unique_label(f"test-ec-verify-{hash_alg}"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
-        signer = PKCS11Signer(p11_client, loaded_priv)
         data = b"the quick brown fox jumps over the lazy dog"
-        signature = signer.sign(data, hash_alg)
+        signature = p11_client.sign_data_with_key(loaded_priv, data, hash_alg)
 
         # Reconstitute the public key and verify the signature.
         pub_crypto = serialization.load_der_public_key(loaded_pub.public_bytes())
@@ -350,12 +353,11 @@ class TestPKCS11Signer:
 
     def test_ec_signature_fails_verification_on_tampered_data(self, p11_client, requires_ec):
         """Negative test: a signature over message A should NOT verify
-        as a signature over message B. This catches the case where the
-        signer might accidentally produce a fixed/empty signature."""
+        as a signature over message B. Catches the case where the
+        signer accidentally produces a fixed or empty signature."""
         pub_desc, priv_desc = _ec_keypair_objects(_unique_label("test-ec-tamper"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
-        signer = PKCS11Signer(p11_client, loaded_priv)
-        signature = signer.sign(b"original message", "SHA384")
+        signature = p11_client.sign_data_with_key(loaded_priv, b"original message", "SHA384")
 
         pub_crypto = serialization.load_der_public_key(loaded_pub.public_bytes())
         with pytest.raises(InvalidSignature):
@@ -364,9 +366,8 @@ class TestPKCS11Signer:
     def test_rsa_signature_verifies_via_cryptography(self, p11_client):
         pub_desc, priv_desc = _rsa_keypair_objects(_unique_label("test-rsa-verify"))
         loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
-        signer = PKCS11Signer(p11_client, loaded_priv)
         data = b"the quick brown fox jumps over the lazy dog"
-        signature = signer.sign(data, "SHA384")
+        signature = p11_client.sign_data_with_key(loaded_priv, data, "SHA384")
 
         pub_crypto = serialization.load_der_public_key(loaded_pub.public_bytes())
         pub_crypto.verify(signature, data, padding.PKCS1v15(), hashes.SHA384())
@@ -400,19 +401,22 @@ def _ca_x509_config(cn: str, *, path_length: int = 0, aia_url: str | None = None
 
 
 def _make_manager_with_hsm(name: str, x509_cfg: X509Config, p11_client) -> CertificateManager:
-    """Build a CertificateManager whose Signer is backed by a fresh
-    SoftHSM keypair."""
+    """Build a CertificateManager whose signing is backed by a fresh
+    SoftHSM keypair. PKCS11Client implements the KeyManager protocol
+    directly, so it can be passed to CertificateManager without an
+    intermediate adapter."""
     label = _unique_label(f"chain-{name}")
     pub_desc, priv_desc = _ec_keypair_objects(label)
     loaded_pub, loaded_priv = p11_client.generate_or_load_keypair(pub_desc, priv_desc)
     return CertificateManager(
-        signer=PKCS11Signer(p11_client, loaded_priv),
+        key_manager=p11_client,
+        privkey=loaded_priv,
+        pubkey=loaded_pub,
         config=CertificateConfig(
             name=name,
             key=KeyConfig(algorithm=SupportedKeyAlgorithms.ec, curve="secp256r1"),
             x509=x509_cfg,
         ),
-        public_key_bytes=loaded_pub.public_bytes(),
     )
 
 
@@ -420,7 +424,7 @@ class TestHsmBackedChainIssuance:
     """The big one: build a complete root -> intermediate -> leaf chain
     where every signature was produced by SoftHSM. Verify each link
     cryptographically. This is the test that confirms the entire stack
-    — config layer, certificate builder, PKCS11Signer, PKCS11Client —
+    — config layer, certificate builder, PKCS11Client (as KeyManager) —
     works together against a real HSM."""
 
     def test_full_chain_verifies(self, p11_client, requires_ec):

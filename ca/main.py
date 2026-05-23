@@ -4,9 +4,10 @@ import asyncio
 from datetime import timezone, datetime
 
 import aio_pika
-from aio_pika.abc import AbstractRobustChannel, AbstractRobustConnection
 from pyasn1_modules import rfc5280
-from vism_lib.rabbitmq import RabbitMQClient
+from sqlalchemy import URL, create_engine
+from vism_lib.data.validation import DataValidation
+from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
 from vism_lib.s3 import AsyncS3Client
 
 from ca.abc import AsyncCallable, Election, KeyManager
@@ -14,7 +15,7 @@ from ca.certificate import CertificateManager
 from ca.config import CAConfig, ca_logger, ValidRevocationReasons, CertificateConfig
 from ca.crypto.util import asn1_time_to_datetime, csr_pem_to_der, crt_der_to_pem, csr_der_to_pem, crt_der_chain_to_pem_chain
 from ca.database import VismCADatabase, CertificateEntity, IssuedCertificate
-from vism_lib.controller import Controller, load_data_exchange_module
+from vism_lib.controller import Controller
 from vism_lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage, DataExchange
 from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
@@ -32,8 +33,6 @@ class RabbitMQElection(Election):
         self.is_leader = False
         self._leader_queue = leader_queue
         self._rabbitmq_client = rabbitmq_client
-        self._rabbitmq_channel: AbstractRobustChannel | None = None
-        self._rabbitmq_connection: AbstractRobustConnection | None = None
 
     async def leader_heartbeat(self) -> None:
         now = datetime.now().strftime("%H:%M:%S")
@@ -44,12 +43,8 @@ class RabbitMQElection(Election):
 
     async def _try_become_leader(self) -> bool:
         try:
-            if not self._rabbitmq_connection or self._rabbitmq_connection.is_closed:
-                self._rabbitmq_connection = await self._rabbitmq_client.get_connection()
-            if not self._rabbitmq_channel or self._rabbitmq_channel.is_closed:
-                self._rabbitmq_channel = await self._rabbitmq_connection.channel(on_return_raises=True)
-
-            queue = await self._rabbitmq_channel.declare_queue(
+            channel = await self._rabbitmq_client.channel()
+            queue = await channel.declare_queue(
                 self._leader_queue,
                 exclusive=True,
                 auto_delete=True,
@@ -64,8 +59,7 @@ class RabbitMQElection(Election):
             return False
         except Exception as e:
             ca_logger.debug(f"Lost election round: {e}")
-            if self._rabbitmq_channel and not self._rabbitmq_channel.is_closed:
-                await self._rabbitmq_channel.close()
+            await self._rabbitmq_client.close()
             return False
 
     async def _on_leader_message(self, *args, **kwargs):
@@ -76,11 +70,7 @@ class RabbitMQElection(Election):
             ca_logger.info("Resigning as leader.")
             self.is_leader = False
 
-        if not self._rabbitmq_channel.is_closed:
-            await self._rabbitmq_channel.close()
-        if not self._rabbitmq_connection.is_closed:
-            await self._rabbitmq_connection.close()
-
+        await self._rabbitmq_client.close()
         await resign_callback()
 
     async def run(self, resign_callback: AsyncCallable, leader_callback: AsyncCallable, follower_callback: AsyncCallable):
@@ -95,7 +85,8 @@ class RabbitMQElection(Election):
                     else:
                         await leader_callback()
                 else:
-                    if self._rabbitmq_channel and self._rabbitmq_channel.is_closed:
+                    channel = await self._rabbitmq_client.channel()
+                    if channel and channel.is_closed:
                         ca_logger.warning("Lost leader channel — re-entering election")
                         self.is_leader = False
                         continue
@@ -107,6 +98,7 @@ class RabbitMQElection(Election):
             raise e
         finally:
             await self.resign(resign_callback)
+            await self._rabbitmq_client.close()
 
 class VismCA(Controller):
     def __init__(
@@ -335,11 +327,28 @@ def main(function: str = None, serial: int | str = None, revoke_reason: ValidRev
     shutdown_event = asyncio.Event()
 
     config: CAConfig = CAConfig.read_config()
+    validation_module = DataValidation(validation_key=config.security.data_validation_key)
+
     p11_client = PKCS11Client(config.pkcs11)
-    database = VismCADatabase(config.database)
+
+    db_url = URL.create(
+        drivername=config.database.driver,
+        username=config.database.username,
+        password=config.database.password,
+        host=config.database.host,
+        port=config.database.port,
+        database=config.database.database
+    )
+    db_engine = create_engine(db_url, echo=False, pool_pre_ping=True)
+    database = VismCADatabase(engine=db_engine, validation_module=validation_module)
+
     s3_client = AsyncS3Client(config.s3)
     rabbitmq_client = RabbitMQClient(config.rabbitmq)
-    data_exchange_module = load_data_exchange_module(config.security.data_exchange)
+    data_exchange_module = RabbitMQExchange(
+        validation_module=validation_module,
+        rabbitmq_client=rabbitmq_client,
+        config=config.rabbitmq
+    )
 
     election = RabbitMQElection(
         shutdown_event=shutdown_event,
