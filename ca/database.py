@@ -42,7 +42,6 @@ class IssuedCertificate(Base):
             "expiration_date": str(self.expiration_date),
             "serial": self.serial.hex(),
             "subject": self.subject.hex(),
-            "ca_id": str(self.ca_id),
             "revocation_date": str(self.revocation_date) if self.revocation_date else None,
             "revocation_reason": self.revocation_reason if self.revocation_reason else None,
         }

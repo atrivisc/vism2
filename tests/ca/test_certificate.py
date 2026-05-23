@@ -134,9 +134,11 @@ class LocalKeyManager(KeyManager[LocalPrivKey, LocalPubKey]):
         raise NotImplementedError(f"Unsupported key type: {type(crypto_key)}")
 
     def generate_or_load_keypair(self, pub_key: LocalPubKey, priv_key: LocalPrivKey) -> tuple[LocalPubKey, LocalPrivKey]:
-        # Tests build the keypair themselves; this just echoes back.
+        # Tests build the keypair themselves
         return pub_key, priv_key
 
+    def make_key_descriptors(self, cert: CertificateConfig) -> tuple[LocalPubKey, LocalPrivKey]:
+        return pub_key, priv_key
 
 def _subject(cn: str, country: str = "EE", organization: str = "Test Org") -> X509ConfigSubjectName:
     return X509ConfigSubjectName(

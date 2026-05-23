@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from pkcs11 import Attribute, Session, Token, AttributeTypeInvalid, AttributeSensitive,  Mechanism
 
 from ca.abc import KeyManager
-from ca.config import PKCS11Config
+from ca.config import PKCS11Config, CertificateConfig
 from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
 from vism_lib.config import shared_logger
 
@@ -122,3 +122,6 @@ class PKCS11Client(KeyManager[PKCS11PrivKey, PKCS11PubKey]):
                     raise ValueError(f"Unsupported key type: {priv_key.key_type}")
 
             return PKCS11PubKey(self._get_p11_obj_attributes(p11_pubkey), pub_key.ec_curve), PKCS11PrivKey(self._get_p11_obj_attributes(p11_privkey))
+
+    def make_key_descriptors(self, cert: CertificateConfig) -> tuple[PKCS11PubKey, PKCS11PrivKey]:
+        return PKCS11PubKey(cert.key_p11_attributes, cert.key.curve), PKCS11PrivKey(cert.key_p11_attributes)

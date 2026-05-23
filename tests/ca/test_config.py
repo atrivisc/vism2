@@ -696,25 +696,29 @@ class TestCAConfigGetCertConfigByName:
             x509=_ca_x509(),
         )
 
-    def test_returns_matching_config(self):
-        ca = CAConfig(
-            x509_certificates=[self._config_named("root"), self._config_named("intermediate")],
+    def _ca_config(self, *cert_names: str) -> CAConfig:
+        """Build a CAConfig with a non-empty Security block. vism_lib's
+        Security requires data_validation_key, so the bare CAConfig(...)
+        default no longer validates."""
+        from vism_lib.config import Security
+        return CAConfig(
+            security=Security(data_validation_key="test-key"),
+            x509_certificates=[self._config_named(n) for n in cert_names],
         )
+
+    def test_returns_matching_config(self):
+        ca = self._ca_config("root", "intermediate")
         result = ca.get_cert_config_by_name("intermediate")
         assert result.name == "intermediate"
 
     def test_raises_when_not_found(self):
-        ca = CAConfig(
-            x509_certificates=[self._config_named("root")],
-        )
+        ca = self._ca_config("root")
         with pytest.raises(CertConfigNotFound):
             ca.get_cert_config_by_name("nonexistent")
 
     def test_raises_on_duplicate_names(self):
         """The config-loader should ideally catch duplicate names earlier,
         but this method is the last line of defense."""
-        ca = CAConfig(
-            x509_certificates=[self._config_named("root"), self._config_named("root")],
-        )
+        ca = self._ca_config("root", "root")
         with pytest.raises(ValueError):
             ca.get_cert_config_by_name("root")

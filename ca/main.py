@@ -21,10 +21,6 @@ from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.der.decoder import decode as der_decoder
 
-from ca.p11.client import PKCS11Client
-from ca.p11.key import PKCS11PrivKey, PKCS11PubKey
-
-
 class RabbitMQElection(Election):
     def __init__(self, shutdown_event: asyncio.Event, election_interval: int = 30, *, rabbitmq_client: RabbitMQClient, leader_queue: str):
         self.shutdown_event = shutdown_event
@@ -209,8 +205,7 @@ class VismCA(Controller):
         return crt_der_chain_to_pem_chain(ders)
 
     def _build_certificate_manager(self, cert_config: CertificateConfig) -> CertificateManager:
-        privkey = PKCS11PrivKey(cert_config.key_p11_attributes)
-        pubkey = PKCS11PubKey(cert_config.key_p11_attributes, cert_config.key.curve)
+        pubkey, privkey = self.key_manager.make_key_descriptors(cert_config)
         pubkey, privkey = self.key_manager.generate_or_load_keypair(pubkey, privkey)
 
         return CertificateManager(
@@ -270,7 +265,7 @@ class VismCA(Controller):
 
         return certificates
 
-    async def load_certificate(self, cert, db_entry, issuer_cert, issuer_db_entity):
+    async def load_certificate(self, cert, db_entry, issuer_cert, issuer_db_entity, *, now: datetime | None = None):
         if issuer_cert is None:
             issuer_cert = cert
         if issuer_db_entity is None:
@@ -295,10 +290,10 @@ class VismCA(Controller):
         )
 
         if db_entry.crt_der is None:
-            self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert)
+            self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
 
         if db_entry.crl_der is None:
-            self._issue_crl(cert, issuer_cert, db_entry, issuer_asn1_cert)
+            self._issue_crl(cert, issuer_cert, db_entry, issuer_asn1_cert, now=now)
 
         return issuer_db_entity, db_entry
 
@@ -316,14 +311,16 @@ class VismCA(Controller):
             ca=issuer_db_entity,
         ))
 
-    def _issue_crl(self, cert, issuer_cert, db_entry, issuer_asn1_cert):
+    def _issue_crl(self, cert, issuer_cert, db_entry, issuer_asn1_cert, *, now: datetime | None = None):
         ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
         revoked = self.database.get_revoked_certificates_for_issuer(db_entry.id)
-        crl = issuer_cert.create_crl(issuer_asn1_cert, revoked)
+        crl = issuer_cert.create_crl(issuer_asn1_cert, revoked, now=now)
         db_entry.crl_der = der_encoder(crl)
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""
+    from ca.p11.client import PKCS11Client
+
     shutdown_event = asyncio.Event()
 
     config: CAConfig = CAConfig.read_config()
