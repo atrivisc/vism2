@@ -13,7 +13,7 @@ from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBi
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
 from vism_lib.database import Base, VismDatabase
-from vism_lib.errors import VismBreakingException
+from vism_lib.errors import VismBreakingException, VismException
 
 
 class ModuleData:
@@ -83,6 +83,23 @@ class CertificateEntity(Base):
 
 class VismCADatabase(VismDatabase):
     """Database interface for Vism CA operations."""
+
+    def get_chain_ders(self, cert_name: str) -> list[bytes]:
+        """Return DER bytes for cert_name and each of its signers, root last."""
+        with self._get_session() as session:
+            cert_entity = session.query(CertificateEntity).filter(CertificateEntity.name == cert_name).first()
+            if cert_entity is None:
+                raise VismException(f"Certificate {cert_name} not found in the database.")
+
+            ders: list[bytes] = []
+            while cert_entity is not None:
+                if cert_entity.crt_der is None:
+                    raise VismException(
+                        f"Certificate {cert_entity.name} has no crt_der in the database."
+                    )
+                ders.append(cert_entity.crt_der)
+                cert_entity = cert_entity.signer
+            return ders
 
     def get_issued_certificate_by_serial(self, serial: int | str) -> Optional[IssuedCertificate]:
         # when str, assume it's a hex

@@ -1,5 +1,6 @@
 import cryptography
 import cryptography.exceptions
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
@@ -137,6 +138,15 @@ class CertificateManager:
         csr = der_decoder(csr_der, asn1Spec=rfc2986.CertificationRequest())[0]
         return self.sign_csr(signer, csr, days, is_ca)
 
+    def load_external_cert_der(self) -> bytes:
+        return x509.load_pem_x509_certificate(self.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+
+    def load_external_crl_der(self) -> bytes:
+        return x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+
+    def issue_self_or_signed(self, issuer: "CertificateManager", issuer_cert_asn1: rfc5280.Certificate | None) -> rfc5280.Certificate:
+        csr = self.create_csr()
+        return issuer.sign_csr(issuer_cert_asn1, csr, self.config.x509.days, is_ca=False)
 
     def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate]) -> CertificateList:
         revoked_cert_entries = [

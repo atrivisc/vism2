@@ -3,14 +3,18 @@
 import asyncio
 from datetime import timezone, datetime
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+import aio_pika
+from aio_pika.abc import AbstractRobustChannel, AbstractRobustConnection
 from pyasn1_modules import rfc5280
+from vism_lib.rabbitmq import RabbitMQClient
+from vism_lib.s3 import AsyncS3Client
 
 from ca import CertificateManager
+from ca.abc import AsyncCallable, Election
 from ca.config import CAConfig, ca_logger, ValidRevocationReasons
 from ca.crypto.signer import PKCS11Signer
-from ca.crypto.util import asn1_time_to_datetime
+from ca.crypto.util import asn1_time_to_datetime, csr_pem_to_der, crt_der_to_pem, csr_der_to_pem, \
+    crt_der_chain_to_pem_chain
 from ca.database import VismCADatabase, CertificateEntity, IssuedCertificate
 from ca.p11 import PKCS11Client, PKCS11PrivKey, PKCS11PubKey
 from vism_lib.controller import Controller
@@ -19,67 +23,150 @@ from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.der.decoder import decode as der_decoder
 
+class RabbitMQElection(Election):
+    def __init__(self, shutdown_event: asyncio.Event, election_interval: int = 30, *, rabbitmq_client: RabbitMQClient, leader_queue: str):
+        self.shutdown_event = shutdown_event
+        self.election_interval = election_interval
+
+        self.is_leader = False
+        self._leader_queue = leader_queue
+        self._rabbitmq_client = rabbitmq_client
+        self._rabbitmq_channel: AbstractRobustChannel | None = None
+        self._rabbitmq_connection: AbstractRobustConnection | None = None
+
+    async def leader_heartbeat(self) -> None:
+        now = datetime.now().strftime("%H:%M:%S")
+        ca_logger.info(f"I am the leader — heartbeat at {now}")
+
+    async def follower_heartbeat(self) -> None:
+        ca_logger.info("Nothing to do — I am secondary")
+
+    async def _try_become_leader(self) -> bool:
+        try:
+            if not self._rabbitmq_connection or self._rabbitmq_connection.is_closed:
+                self._rabbitmq_connection = await self._rabbitmq_client.get_connection()
+            if not self._rabbitmq_channel or self._rabbitmq_channel.is_closed:
+                self._rabbitmq_channel = await self._rabbitmq_connection.channel(on_return_raises=True)
+
+            queue = await self._rabbitmq_channel.declare_queue(
+                self._leader_queue,
+                exclusive=True,
+                auto_delete=True,
+                durable=False,
+            )
+
+            await queue.consume(self._on_leader_message, no_ack=True)
+            self.is_leader = True
+            ca_logger.info("Won the election — I am now the leader")
+            return True
+        except aio_pika.exceptions.ChannelPreconditionFailed:
+            return False
+        except Exception as e:
+            ca_logger.debug(f"Lost election round: {e}")
+            if self._rabbitmq_channel and not self._rabbitmq_channel.is_closed:
+                await self._rabbitmq_channel.close()
+            return False
+
+    async def _on_leader_message(self, *args, **kwargs):
+        pass
+
+    async def resign(self, resign_callback: AsyncCallable) -> None:
+        if self.is_leader:
+            ca_logger.info("Resigning as leader.")
+            self.is_leader = False
+
+        if not self._rabbitmq_channel.is_closed:
+            await self._rabbitmq_channel.close()
+        if not self._rabbitmq_connection.is_closed:
+            await self._rabbitmq_connection.close()
+
+        await resign_callback()
+
+    async def run(self, resign_callback: AsyncCallable, leader_callback: AsyncCallable, follower_callback: AsyncCallable):
+        try:
+            while not self.shutdown_event.is_set():
+                if not self.is_leader:
+                    won = await self._try_become_leader()
+                    if not won:
+                        await self.follower_heartbeat()
+                        await follower_callback()
+                        await asyncio.sleep(self.election_interval)
+                    else:
+                        await leader_callback()
+                else:
+                    if self._rabbitmq_channel and self._rabbitmq_channel.is_closed:
+                        ca_logger.warning("Lost leader channel — re-entering election")
+                        self.is_leader = False
+                        continue
+
+                    await self.leader_heartbeat()
+                    await asyncio.sleep(self.election_interval)
+        except Exception as e:
+            ca_logger.error(f"Stopping rabbitmq leadership loop: {e}")
+            raise e
+        finally:
+            await self.resign(resign_callback)
 
 class VismCA(Controller):
-    """
-    Handles the operations and configuration for a CA within the Vism framework.
+    def __init__(
+            self,
+            config: CAConfig,
+            p11_client: PKCS11Client,
+            database: VismCADatabase,
+            s3_client: AsyncS3Client,
+            election: Election,
+            *,
+            shutdown_event: asyncio.Event = None,
+    ):
+        if shutdown_event is None:
+            shutdown_event = asyncio.Event()
 
-    Provides functionality to initialize and manage certificates, update Certificate Revocation
-    Lists (CRLs), and handle shutdown. The class integrates configuration and database
-    models specific to the CA and allows periodic or event-driven tasks related to CA operation.
+        self.shutdown_event = shutdown_event
 
-    :ivar databaseClass: The database class to be used for CA operations.
-    :type databaseClass: Type[Database]
-    :ivar configClass: The configuration class for the CA.
-    :type configClass: Type[Config]
-    """
+        self.config = config
+        self.p11_client = p11_client
+        self.s3 = s3_client
+        self.database = database
+        self.election = election
 
-    databaseClass = VismCADatabase
-    configClass = CAConfig
-    database: VismCADatabase
-    config: CAConfig
-
-    def __init__(self, p11_client: PKCS11Client = None):
-        super().__init__()
         self.certificates: dict[str, CertificateManager] = {}
 
-        self.p11_client = p11_client or PKCS11Client(self.config.pkcs11)
+        super().__init__(config)
 
     async def update_crl(self):
         pass
 
-    async def revoke_certificates(self, serial: int | str, reason: ValidRevocationReasons, *, now: datetime | None = None):
-        ca_logger.info(f"Revoking certificate with the serial: {serial} with reason: {reason}")
-        issued_certificate = self.database.get_issued_certificate_by_serial(serial)
-        if issued_certificate is None:
-            raise VismBreakingException(f"There is no issued certificate with the serial: {serial}")
+    def revoke_certificate(self, issued_cert: IssuedCertificate, reason: ValidRevocationReasons, *, now: datetime | None = None):
+        serial = der_encoder(issued_cert.serial, asn1Spec=rfc5280.CertificateSerialNumber())[0]
+        serial_int = int(serial)
+        ca_logger.info(f"Revoking certificate with the serial: {serial_int} with reason: {reason}")
 
-        if issued_certificate.status_flag == "r":
+        if issued_cert.status_flag == "r":
             raise VismBreakingException(f"Certificate {serial} was already revoked")
 
-        issued_certificate.status_flag = "r"
-        issued_certificate.revocation_reason = reason.value
-        issued_certificate.revocation_date = now or datetime.now(timezone.utc)
+        issued_cert.status_flag = "r"
+        issued_cert.revocation_reason = reason.value
+        issued_cert.revocation_date = now or datetime.now(timezone.utc)
 
-        self.database.save_to_db(issued_certificate)
+        self.database.save_to_db(issued_cert)
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
     async def handle_csr_from_acme(self, message: DataExchangeCSRMessage) -> None:
         if message.ca_name not in self.certificates:
             return ca_logger.error(f"Invalid cert order '{message.order_id}': CA {message.ca_name} not found in the certificates list.")
 
-        try:
-            csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
-        except Exception as e:
-            return ca_logger.error(f"Invalid cert order '{message.order_id}': Failed to parse CSR: {e}")
-
         issuer_manager = self.certificates[message.ca_name]
         issuer_cert_db_entity = self.database.get_cert_by_name(issuer_manager.config.name)
         issuer_cert = der_decoder(issuer_cert_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
 
+        try:
+            csr_der_bytes = csr_pem_to_der(message.csr_pem)
+        except Exception as e:
+            return ca_logger.error(f"Invalid cert order '{message.order_id}': Failed to parse CSR: {e}")
+
         signed_cert = issuer_manager.sign_csr_der(issuer_cert, csr_der_bytes, message.days, is_ca=False)
         signed_cert_der = der_encoder(signed_cert)
-        signed_cert_pem = x509.load_der_x509_certificate(signed_cert_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        signed_cert_pem = crt_der_to_pem(signed_cert_der)
         chain = signed_cert_pem + '\n' + self.build_pem_chain(message.ca_name)
 
         cert_message = DataExchangeCertMessage(
@@ -115,7 +202,7 @@ class VismCA(Controller):
             follower_callback = self.follower_run
 
             await self.setup_data_exchange_module()
-            await self.elect_leader_loop(resign_callback, leader_callback, follower_callback)
+            await self.election.run(resign_callback, leader_callback, follower_callback)
         except asyncio.CancelledError:
             ca_logger.info("CA shutting down.")
         except Exception as e:
@@ -126,22 +213,8 @@ class VismCA(Controller):
                 await self.data_exchange_module.cleanup(full=True)
 
     def build_pem_chain(self, cert_name: str) -> str:
-        cert_entity = self.database.get_cert_by_name(cert_name)
-        if cert_entity is None:
-            raise VismException(f"Certificate {cert_name} not found in the database.")
-
-        chain = ""
-        while cert_entity is not None:
-            if cert_entity.crt_der is None:
-                raise VismException(f"Certificate {cert_name} has no crt_der in the database.")
-
-            chain += x509.load_der_x509_certificate(cert_entity.crt_der).public_bytes(serialization.Encoding.PEM).decode("utf-8") + '\n'
-            if cert_entity.signer is None:
-                break
-
-            cert_entity = cert_entity.signer
-
-        return chain
+        ders = self.database.get_chain_ders(cert_name)
+        return crt_der_chain_to_pem_chain(ders)
 
     async def save_certificate(self, cert_name: str, cert_entity: CertificateEntity) -> CertificateEntity:
         cert_entity = self.database.save_to_db(cert_entity)
@@ -168,15 +241,15 @@ class VismCA(Controller):
             issuer_db_entity = db_entry
 
         if cert.config.externally_managed:
-            crt_der = x509.load_pem_x509_certificate(cert.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
-            crl_der = x509.load_pem_x509_crl(cert.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+            crt_der = cert.load_external_cert_der()
+            crl_der = cert.load_external_crl_der()
 
             db_entry.crt_der = crt_der
             db_entry.crl_der = crl_der
 
         elif issuer_cert and issuer_cert.config.externally_managed:
             if cert.config.certificate_pem and db_entry.crt_der is None:
-                crt_der = x509.load_pem_x509_certificate(cert.config.certificate_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
+                crt_der = cert.load_external_cert_der()
                 db_entry.crt_der = crt_der
 
             elif db_entry.crt_der is None and cert.config.certificate_pem is None:
@@ -184,7 +257,7 @@ class VismCA(Controller):
                 # TODO: better method?
                 csr = cert.create_csr()
                 csr_der = der_encoder(csr)
-                csr_pem = x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+                csr_pem = csr_der_to_pem(csr_der)
                 raise VismException(
                     f"Certificate {cert.config.name} needs to be manually signed "
                     f"by the external issuer {issuer_cert.config.name}. "
@@ -277,14 +350,40 @@ class VismCA(Controller):
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""
-    ca = VismCA()
+    shutdown_event = asyncio.Event()
+
+    config: CAConfig = CAConfig.read_config()
+    p11_client = PKCS11Client(config.pkcs11)
+    database = VismCADatabase(config.database)
+    s3_client = AsyncS3Client(config.s3)
+    rabbitmq_client = RabbitMQClient(config.rabbitmq)
+
+    election = RabbitMQElection(
+        shutdown_event=shutdown_event,
+        election_interval=30,
+        rabbitmq_client=rabbitmq_client,
+        leader_queue=config.rabbitmq.leader_queue,
+    )
+
+    ca = VismCA(
+        config=config,
+        p11_client=p11_client,
+        database=database,
+        s3_client=s3_client,
+        election=election,
+        shutdown_event=shutdown_event,
+    )
+
     try:
         if function is None:
             asyncio.run(ca.run())
         elif function == "update_crl":
             asyncio.run(ca.update_crl())
         elif function == "revoke":
-            asyncio.run(ca.revoke_certificates(serial, revoke_reason))
+            issued_cert = database.get_issued_certificate_by_serial(serial)
+            if issued_cert is None:
+                raise VismException(f"Certificate with serial {serial} not found")
+            ca.revoke_certificate(issued_cert, revoke_reason)
     except Exception as e:
         ca.shutdown()
         raise e

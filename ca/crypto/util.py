@@ -1,7 +1,9 @@
 import secrets
 from datetime import datetime
 
+from cryptography import x509
 from cryptography.hazmat._oid import SignatureAlgorithmOID
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from pyasn1.type import univ, useful
 from pyasn1_modules import rfc5280
@@ -57,3 +59,21 @@ def get_ans1_time(dt: datetime) -> rfc5280.Time:
         time["utcTime"] = useful.UTCTime.fromDateTime(dt)
 
     return time
+
+def csr_pem_to_der(csr_pem: str) -> bytes:
+    return x509.load_pem_x509_csr(csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+
+def csr_der_to_pem(csr_der: bytes) -> str:
+    return x509.load_der_x509_csr(csr_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+def crt_pem_to_der(crt_pem: str) -> bytes:
+    return x509.load_pem_x509_certificate(crt_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+
+def crt_der_to_pem(crt_der: bytes) -> str:
+    return x509.load_der_x509_certificate(crt_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+def crt_der_chain_to_pem_chain(crt_ders: list[bytes]) -> str:
+    return "".join(
+        x509.load_der_x509_certificate(der).public_bytes(serialization.Encoding.PEM).decode("utf-8") + "\n"
+        for der in crt_ders
+    )
