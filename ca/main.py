@@ -3,14 +3,13 @@
 import asyncio
 from datetime import timezone, datetime
 
-import aio_pika
 from pyasn1_modules import rfc5280
 from sqlalchemy import URL, create_engine
 from vism_lib.data.validation import DataValidation
 from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
 from vism_lib.s3 import AsyncS3Client
 
-from ca.abc import AsyncCallable, Election, KeyManager
+from ca.abc import Election, KeyManager
 from ca.certificate import CertificateManager
 from ca.config import CAConfig, ca_logger, ValidRevocationReasons, CertificateConfig
 from ca.crypto.util import asn1_time_to_datetime, csr_pem_to_der, crt_der_to_pem, csr_der_to_pem, crt_der_chain_to_pem_chain
@@ -21,80 +20,8 @@ from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.der.decoder import decode as der_decoder
 
-class RabbitMQElection(Election):
-    def __init__(self, shutdown_event: asyncio.Event, election_interval: int = 30, *, rabbitmq_client: RabbitMQClient, leader_queue: str):
-        self.shutdown_event = shutdown_event
-        self.election_interval = election_interval
+from ca.rabbitmq_election import RabbitMQElection
 
-        self.is_leader = False
-        self._leader_queue = leader_queue
-        self._rabbitmq_client = rabbitmq_client
-
-    async def leader_heartbeat(self) -> None:
-        now = datetime.now().strftime("%H:%M:%S")
-        ca_logger.info(f"I am the leader — heartbeat at {now}")
-
-    async def follower_heartbeat(self) -> None:
-        ca_logger.info("Nothing to do — I am secondary")
-
-    async def _try_become_leader(self) -> bool:
-        try:
-            channel = await self._rabbitmq_client.channel()
-            queue = await channel.declare_queue(
-                self._leader_queue,
-                exclusive=True,
-                auto_delete=True,
-                durable=False,
-            )
-
-            await queue.consume(self._on_leader_message, no_ack=True)
-            self.is_leader = True
-            ca_logger.info("Won the election — I am now the leader")
-            return True
-        except aio_pika.exceptions.ChannelPreconditionFailed:
-            return False
-        except Exception as e:
-            ca_logger.debug(f"Lost election round: {e}")
-            await self._rabbitmq_client.close()
-            return False
-
-    async def _on_leader_message(self, *args, **kwargs):
-        pass
-
-    async def resign(self, resign_callback: AsyncCallable) -> None:
-        if self.is_leader:
-            ca_logger.info("Resigning as leader.")
-            self.is_leader = False
-
-        await self._rabbitmq_client.close()
-        await resign_callback()
-
-    async def run(self, resign_callback: AsyncCallable, leader_callback: AsyncCallable, follower_callback: AsyncCallable):
-        try:
-            while not self.shutdown_event.is_set():
-                if not self.is_leader:
-                    won = await self._try_become_leader()
-                    if not won:
-                        await self.follower_heartbeat()
-                        await follower_callback()
-                        await asyncio.sleep(self.election_interval)
-                    else:
-                        await leader_callback()
-                else:
-                    channel = await self._rabbitmq_client.channel()
-                    if channel and channel.is_closed:
-                        ca_logger.warning("Lost leader channel — re-entering election")
-                        self.is_leader = False
-                        continue
-
-                    await self.leader_heartbeat()
-                    await asyncio.sleep(self.election_interval)
-        except Exception as e:
-            ca_logger.error(f"Stopping rabbitmq leadership loop: {e}")
-            raise e
-        finally:
-            await self.resign(resign_callback)
-            await self._rabbitmq_client.close()
 
 class VismCA(Controller):
     def __init__(

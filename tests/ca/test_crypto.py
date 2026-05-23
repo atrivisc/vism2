@@ -617,7 +617,7 @@ class TestRequestedExtensionsCarryover:
         assert _get_ext(tbs, OID_KEY_USAGE) is not None
 
     def test_ca_cert_carries_aia_crldp_from_csr(self, issuer_cert, subject_key):
-        """CA certs source AIA/CRLDP from the CSR's requested extensions
+        """CA certs source AIA/CRLDP from the CSRs requested extensions
         (their own config). build_tbs_certificate doesn't add or
         deduplicate AIA/CRLDP when is_ca=True."""
         aia = _make_aia_ext("http://ocsp.intermediate.example.com")

@@ -1,8 +1,5 @@
 import asyncio
 from typing import Protocol, Any, Callable, Awaitable, TypeVar
-
-from ca.config import CertificateConfig
-
 type AsyncCallable = Callable[[], Awaitable]
 
 class Key(Protocol):
@@ -39,7 +36,7 @@ class KeyManager(Protocol[PrivKeyT, PubKeyT]):
 
     def generate_or_load_keypair(self, pub_key: PubKeyT, priv_key: PrivKeyT) -> tuple[PubKeyT, PrivKeyT]: ...
 
-    def make_key_descriptors(self, cert_config: CertificateConfig) -> tuple[PubKeyT, PrivKeyT]: ...
+    def make_key_descriptors(self, cert_config: 'CertificateConfig') -> tuple[PubKeyT, PrivKeyT]: ...
 
 class Election(Protocol):
     shutdown_event: asyncio.Event

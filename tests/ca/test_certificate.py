@@ -137,9 +137,6 @@ class LocalKeyManager(KeyManager[LocalPrivKey, LocalPubKey]):
         # Tests build the keypair themselves
         return pub_key, priv_key
 
-    def make_key_descriptors(self, cert: CertificateConfig) -> tuple[LocalPubKey, LocalPrivKey]:
-        return pub_key, priv_key
-
 def _subject(cn: str, country: str = "EE", organization: str = "Test Org") -> X509ConfigSubjectName:
     return X509ConfigSubjectName(
         common_name=cn, country=country, organization=organization
