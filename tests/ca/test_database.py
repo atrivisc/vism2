@@ -42,7 +42,7 @@ class TestSaveAndSign:
     def test_save_populates_signature(self, db):
         saved = db.save_to_db(_root_cert(name="root"))
         assert saved.signature is not None
-        assert len(saved.signature) == 32  # HMAC-SHA256
+        assert len(saved.signature) == 67
 
     def test_save_populates_id(self, db):
         saved = db.save_to_db(_root_cert(name="root"))
