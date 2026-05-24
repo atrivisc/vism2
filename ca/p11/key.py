@@ -1,18 +1,62 @@
-import hashlib
 from typing import Any
 
 import pkcs11
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.primitives.asymmetric.ec import get_curve_for_oid
-from pkcs11 import Attribute
-from ca.p11.object import PKCS11Object
+from pkcs11 import Attribute, LocalDomainParameters
 from pyasn1.codec.der.decoder import decode as der_decoder
-from pyasn1.type import univ, useful, tag, char
+from pyasn1.type import univ
 from cryptography.hazmat._oid import ObjectIdentifier
 
-class PKCS11PubKey(PKCS11Object):
+from ca.abc import Key, PublicKey, PrivateKey
+
+
+class PKCS11Key(Key):
+    LABEL_SUFFIX = ""
+    OVERRIDES = {}
+    BASE_TEMPLATE = {}
+
+    def __init__(self, attributes: dict[Attribute, Any] = None):
+        if attributes is None:
+            attributes = {}
+
+        self.attributes = attributes
+
+    @property
+    def label(self) -> str:
+        label = self.attributes[pkcs11.Attribute.LABEL]
+        if self.LABEL_SUFFIX and not label.endswith(self.LABEL_SUFFIX):
+            label += f'-{self.LABEL_SUFFIX}'
+        return label
+
+    @property
+    def id(self) -> str:
+        return self.attributes[pkcs11.Attribute.ID]
+
+    @property
+    def key_type(self) -> pkcs11.KeyType:
+        return self.attributes[pkcs11.Attribute.KEY_TYPE]
+
+    @property
+    def key_length(self) -> int:
+        return self.attributes[pkcs11.Attribute.MODULUS_BITS]
+
+    @property
+    def ec_params(self) -> LocalDomainParameters:
+        return self.attributes[pkcs11.Attribute.EC_PARAMS]
+
+    @property
+    def template(self) -> dict[pkcs11.Attribute, Any]:
+        overrides = self.OVERRIDES.get(self.attributes[pkcs11.Attribute.KEY_TYPE], {})
+        template = {
+            pkcs11.Attribute.LABEL: self.label,
+            pkcs11.Attribute.ID: self.id,
+        }
+        return self.BASE_TEMPLATE | overrides | template
+
+
+class PKCS11PubKey(PublicKey, PKCS11Key):
     BASE_TEMPLATE = {
         Attribute.TOKEN: True,
         Attribute.PRIVATE: False,
@@ -69,7 +113,7 @@ class PKCS11PubKey(PKCS11Object):
         return der_bytes
 
 
-class PKCS11PrivKey(PKCS11Object):
+class PKCS11PrivKey(PrivateKey, PKCS11Key):
     BASE_TEMPLATE = {
         Attribute.PRIVATE: True,
         Attribute.TOKEN: True,

@@ -17,11 +17,12 @@ from cryptography.hazmat.bindings._rust import ObjectIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
 from pyasn1.type import univ, char, tag
 from pyasn1_modules import rfc5280
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from vism_lib.config import VismConfig
 from pyasn1.codec.der.encoder import encode as der_encoder
+from cron_converter import Cron
 
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
@@ -107,15 +108,6 @@ class PKCS11Config:
     token_label: str
     user_pin: str
 
-    @field_validator("lib_path")
-    @classmethod
-    def validate_lib_path(cls, v: str):
-        """Validate PKCS#11 library path."""
-        if not os.path.exists(v):
-            raise ValueError(f"PKCS#11 library path '{v}' does not exist")
-
-        return v
-
 @dataclass
 class X509ConfigSubjectName:
     """X509 subject name configuration."""
@@ -125,12 +117,19 @@ class X509ConfigSubjectName:
     locality: str = None
     organization: str = None
 
+    def is_empty(self):
+        return all(value is None for value in self.__dict__.values())
+
     @staticmethod
     def _add_rdn(rdn_seq: rfc5280.RDNSequence, attribute_type: ObjectIdentifier, value: str):
         if value:
             rdn = rfc5280.RelativeDistinguishedName()
             attr = rfc5280.AttributeTypeAndValue()
             attr.setComponentByName("type", univ.ObjectIdentifier(attribute_type.dotted_string))
+
+            # the choice to use UTF8String for each value is deliberate.
+            # https://datatracker.ietf.org/doc/html/rfc5280#section-7.1
+            # "Conforming implementations MUST support UTF8String and PrintableString."
             attr.setComponentByName("value", char.UTF8String(value))
             rdn.append(attr)
             rdn_seq.append(rdn)
@@ -179,7 +178,6 @@ class X509ConfigKeyUsage(X509ConfigExtension):
             f"{int(self.decipher_only)}"
         )
 
-
 @dataclass
 class X509ConfigExtendedKeyUsage(X509ConfigExtension):
     OID: ClassVar[str] = x509.OID_EXTENDED_KEY_USAGE.dotted_string
@@ -198,14 +196,30 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
     OID: ClassVar[str] = x509.OID_BASIC_CONSTRAINTS.dotted_string
 
     ca: bool = False
-    path_length: int = 0
+    path_length: int | None = None
 
     def to_asn1(self):
         basic_constraints = rfc5280.BasicConstraints()
         basic_constraints.setComponentByName("cA", self.ca)
-        basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
+        if self.ca and self.path_length is not None:
+            basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
 
         return basic_constraints
+
+    @model_validator(mode='after')
+    def check_config(self):
+        if self.ca and not self.critical:
+            raise ValueError("BasicConstraints must be critical if CA is set to True")
+
+        return self
+
+    @field_validator("path_length")
+    @classmethod
+    def validate_path_length(cls, v: int):
+        if v < 0:
+            raise ValueError(f"path_length must be greater than or equal to 0, got {v}")
+
+        return v
 
 
 @dataclass
@@ -218,20 +232,29 @@ class X509ConfigSubjectAlternativeName(X509ConfigExtension):
     emails: list[str] = None
 
     def to_asn1(self):
+        import ipaddress as _ipaddress
+
         subject_alt_names = rfc5280.SubjectAltName()
         for ip in self.ips or []:
+            packed = _ipaddress.ip_address(ip).packed
             name = rfc5280.GeneralName()
-            name.setComponentByName("iPAddress", univ.OctetString(ip))
+            name["iPAddress"] = univ.OctetString(packed).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 7)
+            )
             subject_alt_names.append(name)
 
         for dn in self.dns or []:
             name = rfc5280.GeneralName()
-            name.setComponentByName("dNSName", char.IA5String(dn))
+            name["dNSName"] = char.IA5String(dn).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 2)
+            )
             subject_alt_names.append(name)
 
         for email in self.emails or []:
             name = rfc5280.GeneralName()
-            name.setComponentByName("rfc822Name", char.IA5String(email))
+            name["rfc822Name"] = char.IA5String(email).subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 1)
+            )
             subject_alt_names.append(name)
 
         return subject_alt_names
@@ -329,7 +352,7 @@ class X509ConfigDistributionPoint:
         if self.reasons:
             reasons = rfc5280.ReasonFlags(
                 "".join(str(int(reason in self.reasons)) for reason in X509ConfigDistributionPointReasonFlags)
-            )
+            ).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 1))
             dp["reasons"] = reasons
 
         return dp
@@ -365,6 +388,17 @@ class X509Config:
     extended_key_usage: X509ConfigExtendedKeyUsage = None
     subject_alternative_name: X509ConfigSubjectAlternativeName = None
 
+    leaf_authority_info_access: X509ConfigAuthorityInfoAccess = None
+
+    @model_validator(mode='after')
+    def check_config(self):
+        if self.subject_name.is_empty() and (not self.subject_alternative_name or not self.subject_alternative_name.critical):
+            raise ValueError("SAN must be critical if subject name is empty")
+
+        if self.subject_name.is_empty() and self.basic_constraints.ca:
+            raise ValueError("CA can not have empty subject name")
+
+        return self
 
 @dataclass
 class CertificateConfig:
@@ -376,6 +410,7 @@ class CertificateConfig:
     externally_managed: bool = False
     certificate_pem: str = None
     crl_pem: str = None
+    crl_update_cron: str = "0 1 * * *"
 
     key: KeyConfig = None
     x509: X509Config = None
@@ -407,6 +442,12 @@ class CertificateConfig:
 
         return attributes
 
+    @model_validator(mode='after')
+    def check_config(self):
+        if self.crl_update_cron:
+            Cron(self.crl_update_cron)
+
+        return self
 
 @dataclass
 class CAConfig(VismConfig):

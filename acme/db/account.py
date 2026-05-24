@@ -37,5 +37,4 @@ class AccountEntity(Base):
             "kid": self.kid,
             "status": self.status,
             "contact": self.contact,
-            "jwk_id": str(self.jwk_id),
         }

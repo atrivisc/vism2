@@ -3,78 +3,122 @@
 import asyncio
 from datetime import timezone, datetime
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-
-from ca import Certificate
-from ca.asn1 import get_ans1_time
-from ca.config import CAConfig, ca_logger, ValidRevocationReasons
-from ca.database import VismCADatabase
-from ca.p11 import PKCS11Client
-from vism_lib.controller import Controller
-from vism_lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage
-from vism_lib.errors import VismBreakingException
+from pyasn1_modules import rfc5280
+from sqlalchemy import URL, create_engine
+from vism_lib.data.validation import DataValidation
+from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
 from vism_lib.s3 import AsyncS3Client
+
+from ca.abc import Election, KeyManager
+from ca.certificate import CertificateManager
+from ca.config import CAConfig, ca_logger, ValidRevocationReasons, CertificateConfig
+from ca.crypto.util import asn1_time_to_datetime, csr_pem_to_der, crt_der_to_pem, csr_der_to_pem, crt_der_chain_to_pem_chain
+from ca.database import VismCADatabase, CertificateEntity, IssuedCertificate
+from vism_lib.controller import Controller
+from vism_lib.data.exchange import DataExchangeCSRMessage, DataExchangeCertMessage, DataExchange
+from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
+from pyasn1.codec.der.decoder import decode as der_decoder
+
+from ca.rabbitmq_election import RabbitMQElection
 
 
 class VismCA(Controller):
-    """
-    Handles the operations and configuration for a CA within the Vism framework.
+    def __init__(
+            self,
+            config: CAConfig,
+            key_manager: KeyManager,
+            database: VismCADatabase,
+            s3_client: AsyncS3Client,
+            election: Election,
+            data_exchange_module: DataExchange,
+            *,
+            shutdown_event: asyncio.Event = None,
+    ):
+        if shutdown_event is None:
+            shutdown_event = asyncio.Event()
 
-    Provides functionality to initialize and manage certificates, update Certificate Revocation
-    Lists (CRLs), and handle shutdown. The class integrates configuration and database
-    models specific to the CA and allows periodic or event-driven tasks related to CA operation.
+        self.shutdown_event = shutdown_event
 
-    :ivar databaseClass: The database class to be used for CA operations.
-    :type databaseClass: Type[Database]
-    :ivar configClass: The configuration class for the CA.
-    :type configClass: Type[Config]
-    """
+        self.config = config
+        self.key_manager = key_manager
+        self.s3 = s3_client
+        self.database = database
+        self.data_exchange_module = data_exchange_module
 
-    databaseClass = VismCADatabase
-    configClass = CAConfig
-    database: VismCADatabase
-    config: CAConfig
+        self.election = election
+        self.election.register_handler("on_follower_heartbeat", self._on_follower_heartbeat)
+        self.election.register_handler("on_leader_heartbeat", self._on_leader_heartbeat)
+        self.election.register_handler("on_elected", self._on_elected)
+        self.election.register_handler("on_election_lost", self._on_election_lost)
+        self.election.register_handler("on_resign", self._on_resign)
 
-    def __init__(self):
-        super().__init__()
-        self.certificates: dict[str, Certificate] = {}
-        self.p11_client = PKCS11Client(self.config.pkcs11)
-        self.s3_client = AsyncS3Client(self.config.s3)
+        self.certificates: dict[str, CertificateManager] = {}
 
-    async def update_crl(self):
-        pass
+        super().__init__(config)
 
-    async def revoke_certificates(self, serial: int | str, reason: ValidRevocationReasons):
-        ca_logger.info(f"Revoking certificate with the serial: {serial} with reason: {reason}")
-        issued_certificate = self.database.get_issued_certificate_by_serial(serial)
-        if issued_certificate is None:
-            raise VismBreakingException(f"There is no issued certificate with the serial: {serial}")
+    async def _on_follower_heartbeat(self):
+        ca_logger.info("I am a follower.")
 
-        if issued_certificate.status_flag == "r":
+    async def _on_leader_heartbeat(self):
+        ca_logger.info("I am the leader.")
+        for cert in self.certificates.values():
+            if cert.config.externally_managed:
+                continue
+
+            if datetime.now(tz=timezone.utc) >= cert.next_crl_update:
+                db_entry = self.database.get_cert_by_name(cert.config.name)
+                db_entry = self._issue_crl(cert, db_entry)
+                self.database.save_to_db(db_entry)
+                cert.next_crl_update = cert.crl_update_schedule.next()
+                await self.s3.upload_bytes(db_entry.crl_der, f"crl/{cert.config.name}.crl")
+                ca_logger.info(f"Updated CRL for certificate {cert.config.name}. Next update: {cert.next_crl_update}")
+
+    async def _on_elected(self):
+        await self.s3.create_bucket()
+        self.certificates = await self.load_certificates()
+        await self.data_exchange_module.receive_messages(DataExchangeCSRMessage, self.handle_csr_from_acme)
+
+    async def _on_election_lost(self):
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=True)
+
+    async def _on_resign(self):
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=True)
+
+    def revoke_certificate(self, issued_cert: IssuedCertificate, reason: ValidRevocationReasons, *, now: datetime | None = None):
+        serial = der_decoder(issued_cert.serial, asn1Spec=rfc5280.CertificateSerialNumber())[0]
+        serial_int = int(serial)
+        ca_logger.info(f"Revoking certificate with the serial: {serial_int} with reason: {reason}")
+
+        if issued_cert.status_flag == "r":
             raise VismBreakingException(f"Certificate {serial} was already revoked")
 
-        issued_certificate.status_flag = "r"
-        issued_certificate.revocation_reason = reason.value
-        issued_certificate.revocation_date = der_encoder(get_ans1_time(datetime.now(timezone.utc)))
+        issued_cert.status_flag = "r"
+        issued_cert.revocation_reason = reason.value
+        issued_cert.revocation_date = now or datetime.now(timezone.utc)
 
-        self.database.save_to_db(issued_certificate)
+        self.database.save_to_db(issued_cert)
         ca_logger.info(f"Revoked certificate: {serial} with reason {reason.value}")
 
     async def handle_csr_from_acme(self, message: DataExchangeCSRMessage) -> None:
         if message.ca_name not in self.certificates:
             return ca_logger.error(f"Invalid cert order '{message.order_id}': CA {message.ca_name} not found in the certificates list.")
 
+        issuer_manager = self.certificates[message.ca_name]
+        issuer_cert_db_entity = self.database.get_cert_by_name(issuer_manager.config.name)
+        issuer_cert = der_decoder(issuer_cert_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
+
         try:
-            csr_der_bytes = x509.load_pem_x509_csr(message.csr_pem.encode("utf-8")).public_bytes(serialization.Encoding.DER)
+            csr_der_bytes = csr_pem_to_der(message.csr_pem)
         except Exception as e:
             return ca_logger.error(f"Invalid cert order '{message.order_id}': Failed to parse CSR: {e}")
 
-        issuer = self.certificates[message.ca_name]
-        signed_cert_der = await issuer.sign_csr(csr_der_bytes, message.days, is_ca=False)
-        signed_cert_pem = x509.load_der_x509_certificate(signed_cert_der).public_bytes(serialization.Encoding.PEM).decode("utf-8")
-        chain = signed_cert_pem + '\n' + issuer.pem_chain
+        signed_cert = issuer_manager.sign_csr_der(issuer_cert, csr_der_bytes, message.days, is_ca=False)
+        signed_cert_der = der_encoder(signed_cert)
+        signed_cert_pem = crt_der_to_pem(signed_cert_der)
+        chain = signed_cert_pem + '\n' + self.build_pem_chain(message.ca_name)
 
         cert_message = DataExchangeCertMessage(
             chain=chain,
@@ -83,31 +127,13 @@ class VismCA(Controller):
             days=message.days,
         )
 
-        return await self.data_exchange_module.send_cert(cert_message)
-
-    async def leader_run(self):
-        await self.s3_client.create_bucket()
-        await self.init_certificates()
-        await self.data_exchange_module.receive_csr(callback=self.handle_csr_from_acme)
-
-    async def follower_run(self):
-        if self.data_exchange_module is not None:
-            await self.data_exchange_module.cleanup(full=False)
-
-    async def async_shutdown(self):
-        if self.data_exchange_module is not None:
-            await self.data_exchange_module.cleanup(full=False)
+        return await self.data_exchange_module.send_message(cert_message)
 
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
         try:
-            resign_callback = self.async_shutdown
-            leader_callback = self.leader_run
-            follower_callback = self.follower_run
-
-            await self.setup_data_exchange_module()
-            await self.elect_leader_loop(resign_callback, leader_callback, follower_callback)
+            await self.election.run()
         except asyncio.CancelledError:
             ca_logger.info("CA shutting down.")
         except Exception as e:
@@ -117,29 +143,182 @@ class VismCA(Controller):
             if self.data_exchange_module is not None:
                 await self.data_exchange_module.cleanup(full=True)
 
-    async def init_certificates(self):
+    def build_pem_chain(self, cert_name: str) -> str:
+        ders = self.database.get_chain_ders(cert_name)
+        return crt_der_chain_to_pem_chain(ders)
+
+    def _build_certificate_manager(self, cert_config: CertificateConfig) -> CertificateManager:
+        pubkey, privkey = self.key_manager.make_key_descriptors(cert_config)
+        pubkey, privkey = self.key_manager.generate_or_load_keypair(pubkey, privkey)
+
+        return CertificateManager(
+            key_manager=self.key_manager,
+            privkey=privkey,
+            pubkey=pubkey,
+            config=cert_config,
+        )
+
+    async def save_certificate(self, cert_name: str, cert_entity: CertificateEntity) -> CertificateEntity:
+        cert_entity = self.database.save_to_db(cert_entity)
+
+        if cert_entity.crt_der is not None:
+            await self.s3.upload_bytes(cert_entity.crt_der, f"crt/{cert_name}.crt")
+
+        if cert_entity.crl_der is not None:
+            await self.s3.upload_bytes(cert_entity.crl_der, f"crl/{cert_name}.crl")
+
+        return cert_entity
+
+    async def load_certificates(self) -> dict[str, CertificateManager]:
         ca_logger.info("Initializing certificates")
+        # In this loop we assume certs are configured in signing order
+        # TODO: dont assume and figure out the order?
+        certificates: dict[str, CertificateManager] = {}
+
         for cert_config in self.config.x509_certificates:
-            issuer = None
+            if cert_config.signed_by is not None and cert_config.signed_by not in certificates:
+                raise VismException(f"Certificate {cert_config.name} is signed by {cert_config.signed_by} which is not defined in the config before {cert_config.signed_by}.")
+
+            issuer_cert = None
+            issuer_db_entity = None
+
             if cert_config.signed_by is not None:
-                issuer = self.certificates[cert_config.signed_by]
+                issuer_cert = certificates[cert_config.signed_by]
+                issuer_db_entity = self.database.get_cert_by_name(issuer_cert.config.name)
 
-            cert = Certificate(self, cert_config, issuer)
-            await cert.load()
+            db_entry = self.database.get_cert_by_name(cert_config.name)
+            if db_entry is None:
+                db_entry = CertificateEntity(
+                    name=cert_config.name,
+                    externally_managed=cert_config.externally_managed,
+                    signer=issuer_db_entity
+                )
 
-            self.certificates[cert.config.name] = cert
+            cert = self._build_certificate_manager(cert_config)
 
+            issuer_db_entity, db_entry = await self.load_certificate(cert, db_entry, issuer_cert, issuer_db_entity)
+            await self.save_certificate(cert.config.name, db_entry)
+
+            if issuer_cert is None:
+                issuer_cert = cert
+
+            await self.save_certificate(issuer_cert.config.name, issuer_db_entity)
+
+            certificates[cert.config.name] = cert
+
+        return certificates
+
+    async def load_certificate(self, cert, db_entry, issuer_cert, issuer_db_entity, *, now: datetime | None = None):
+        if issuer_cert is None:
+            issuer_cert = cert
+        if issuer_db_entity is None:
+            issuer_db_entity = db_entry
+
+        if cert.config.externally_managed:
+            db_entry.crt_der = cert.load_external_cert_der()
+            db_entry.crl_der = cert.load_external_crl_der()
+        elif issuer_cert.config.externally_managed:
+            if cert.config.certificate_pem and db_entry.crt_der is None:
+                db_entry.crt_der = cert.load_external_cert_der()
+            elif db_entry.crt_der is None and cert.config.certificate_pem is None:
+                csr = cert.create_csr()
+                csr_pem = csr_der_to_pem(der_encoder(csr))
+                raise VismException(
+                    f"Certificate {cert.config.name} needs to be manually signed "
+                    f"by the external issuer {issuer_cert.config.name}. CSR:\n{csr_pem}"
+                )
+
+        if db_entry.crt_der is None:
+            issuer_asn1_cert = (
+                der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
+                if issuer_db_entity.crt_der is not None else None
+            )
+            db_entry = self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
+
+        if db_entry.crl_der is None:
+            db_entry = self._issue_crl(cert, db_entry, now=now)
+
+        return issuer_db_entity, db_entry
+
+    def _issue_cert(self, cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, *, now: datetime | None = None):
+        ca_logger.info(f"Creating certificate {cert.config.name}, signed by {issuer_cert.config.name}")
+        csr = cert.create_csr()
+        crt = issuer_cert.sign_csr(issuer_asn1_cert, csr, cert.config.x509.days, is_ca=False, now=now)
+        db_entry.crt_der = der_encoder(crt)
+
+        issuer_db_entity.issued_certificates.append(IssuedCertificate(
+            status_flag="v",
+            expiration_date=asn1_time_to_datetime(crt['tbsCertificate']["validity"]["notAfter"]),
+            serial=der_encoder(crt['tbsCertificate']["serialNumber"]),
+            subject=der_encoder(crt['tbsCertificate']["subject"]),
+        ))
+
+        return db_entry
+
+    def _issue_crl(self, cert, db_entry, *, now: datetime | None = None):
+        ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
+        revoked = self.database.get_revoked_certificates_for_issuer(db_entry.id)
+        own_asn1_cert = der_decoder(db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        crl = cert.create_crl(own_asn1_cert, revoked, crl_number=db_entry.crl_number, now=now)
+        db_entry.crl_der = der_encoder(crl)
+        db_entry.crl_number += 1
+        return db_entry
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""
-    ca = VismCA()
+    from ca.p11.client import PKCS11Client
+
+    shutdown_event = asyncio.Event()
+
+    config: CAConfig = CAConfig.read_config()
+    validation_module = DataValidation(validation_key=config.security.data_validation_key)
+
+    p11_client = PKCS11Client(config.pkcs11)
+
+    db_url = URL.create(
+        drivername=config.database.driver,
+        username=config.database.username,
+        password=config.database.password,
+        host=config.database.host,
+        port=config.database.port,
+        database=config.database.database
+    )
+    db_engine = create_engine(db_url, echo=False, pool_pre_ping=True)
+    database = VismCADatabase(engine=db_engine, validation_module=validation_module)
+
+    s3_client = AsyncS3Client(config.s3)
+    rabbitmq_client = RabbitMQClient(config.rabbitmq)
+    data_exchange_module = RabbitMQExchange(
+        validation_module=validation_module,
+        rabbitmq_client=rabbitmq_client,
+        config=config.rabbitmq
+    )
+
+    election = RabbitMQElection(
+        shutdown_event=shutdown_event,
+        election_interval=30,
+        rabbitmq_client=rabbitmq_client,
+        leader_queue=config.rabbitmq.leader_queue,
+    )
+
+    ca = VismCA(
+        config=config,
+        key_manager=p11_client,
+        database=database,
+        s3_client=s3_client,
+        election=election,
+        shutdown_event=shutdown_event,
+        data_exchange_module=data_exchange_module,
+    )
+
     try:
         if function is None:
             asyncio.run(ca.run())
-        if function == "update_crl":
-            asyncio.run(ca.update_crl())
-        if function == "revoke":
-            asyncio.run(ca.revoke_certificates(serial, revoke_reason))
+        elif function == "revoke":
+            issued_cert = database.get_issued_certificate_by_serial(serial)
+            if issued_cert is None:
+                raise VismException(f"Certificate with serial {serial} not found")
+            ca.revoke_certificate(issued_cert, revoke_reason)
     except Exception as e:
         ca.shutdown()
         raise e

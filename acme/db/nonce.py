@@ -26,8 +26,4 @@ class NonceEntity(Base):
     )
 
     def to_dict(self):
-        nonce_dict = {"nonce": self.nonce}
-        if self.account:
-            nonce_dict["account_id"] = str(self.account_id)
-
-        return nonce_dict
+        return {"nonce": self.nonce}

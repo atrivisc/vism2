@@ -122,9 +122,7 @@ class OrderRouter:
         )
 
         try:
-            await self.controller.data_exchange_module.send_csr(
-                rabbitmq_message
-            )
+            await self.controller.data_exchange_module.send_message(rabbitmq_message)
             acme_logger.info("Sent CSR to RabbitMQ.")
         except Exception as exc:
             acme_logger.error("Failed to send CSR to RabbitMQ: %s", exc)
@@ -269,7 +267,7 @@ class OrderRouter:
         """Build JSON response for order endpoints."""
         response: dict[str, Any] = {
             "status": order.status,
-            "expires": order.expires,
+            "expires": order.expires.isoformat(),
             "notBefore": order.not_before,
             "notAfter": order.not_after,
             "identifiers": [

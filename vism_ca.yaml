@@ -1,29 +1,48 @@
 vism_ca:
   logging:
     log_root: "vism_ca"
-    verbose: True
+    verbose: true
 
   security:
-    data_exchange:
-      module: "rabbitmq"
-      validation_key: "super-secret-key"
+    data_validation_key: "super-secret-key"
+
+  rabbitmq:
+    leader_queue: "leader"
+
+    host: "127.0.0.1"
+    port: "5672"
+    user: "vism_acme"
+    password: "vism_acme"
+    vhost: "/"
+
+    csr_routing_key: "csr"
+    cert_routing_key: "cert"
+
+    csr_queue: "csr"
+    cert_queue: "cert"
+
+    csr_exchange: "csr"
+    cert_exchange: "cert"
+
+    max_retries: "5"
+    retry_delay_seconds: "60"
 
   s3:
     bucket: "vism"
-    endpoint: "{{ env['S3_ENDPOINT'] }}"
+    endpoint: "http://127.0.0.1:9000"
     access_key: "minioadmin"
     secret_key: "minioadmin"
 
   database:
     data_validation_key: "super-secret-key"
-    host: "{{ env['DB_HOST'] }}"
+    host: "127.0.0.1"
     port: "5432"
     database: "vism_acme"
     username: "vism_acme"
     password: "vism_acme"
 
   pkcs11:
-    lib_path: /usr/lib/softhsm/libsofthsm2.so
+    lib_path: /usr/lib64/libsofthsm2.so
     token_label: TEST_01
     user_pin: "1234"
 

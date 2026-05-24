@@ -14,15 +14,6 @@ class RevokedCertificateEntry(univ.Sequence):
 class RevokedCertificates(univ.SequenceOf):
     componentType = RevokedCertificateEntry()
 
+# This is defined as SetOf deliberately, wrapping into SequenceOf is done in build.py
 class ExtensionsRequest(univ.SetOf):
     componentType = rfc5280.Extensions()
-
-def get_ans1_time(dt: datetime) -> rfc5280.Time:
-    time = rfc5280.Time()
-
-    if dt.year > 2049:
-        time["generalTime"] = useful.GeneralizedTime.fromDateTime(dt)
-    else:
-        time["utcTime"] = useful.UTCTime.fromDateTime(dt)
-
-    return time

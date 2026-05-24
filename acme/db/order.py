@@ -1,6 +1,6 @@
 """Database models for ACME order entities."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from uuid import UUID
 
@@ -9,7 +9,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
-from vism_lib.database import Base
+from vism_lib.database import Base, TZDateTime
 from .account import AccountEntity
 from .error import ErrorEntity
 
@@ -25,7 +25,7 @@ class OrderStatus(str, Enum):
     EXPIRED = "expired"
 
 def get_expiry_time():
-    return (datetime.now() + timedelta(hours=12)).isoformat()
+    return datetime.now(tz=timezone.utc) + timedelta(hours=12)
 
 class OrderEntity(Base):
     """Database entity representing an ACME order."""
@@ -41,8 +41,8 @@ class OrderEntity(Base):
     not_after: Mapped[str] = mapped_column(
         Integer, default=None, nullable=True
     )
-    expires: Mapped[str] = mapped_column(
-        String(64),
+    expires: Mapped[datetime] = mapped_column(
+        TZDateTime,
         default_factory=get_expiry_time,
         init=False
     )
@@ -84,9 +84,7 @@ class OrderEntity(Base):
             "status": self.status,
             "not_before": self.not_before,
             "not_after": self.not_after,
-            "error_id": str(self.error_id),
-            "expires": self.expires,
+            "expires": self.expires.isoformat(),
             "csr_pem": self.csr_pem,
             "crt_pem": self.crt_pem,
-            "account_id": str(self.account_id),
         }

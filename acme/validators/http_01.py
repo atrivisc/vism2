@@ -74,7 +74,7 @@ class Http01Validator:
 
         token = self.challenge.key_authorization.split(".")[0]
         validation_url = (
-            f"http://{self.challenge.authz.identifier_value}:{self.port}"
+            f"http://{self.challenge.authz.identifier_value}:{self.port}" # noqa
             f"/.well-known/acme-challenge/{token}"
         )
 

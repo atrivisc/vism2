@@ -5,7 +5,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from cryptography import x509
 from fastapi import FastAPI
+from sqlalchemy import URL, create_engine
 from starlette.responses import JSONResponse
+from vism_lib.data.validation import DataValidation
+from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
 
 from acme.config import AcmeConfig, acme_logger
 from acme.database import VismAcmeDatabase
@@ -13,25 +16,25 @@ from acme.db import OrderEntity, OrderStatus, ErrorEntity
 from acme.errors import ACMEProblemResponse
 from acme.middleware import AcmeAccountMiddleware, JWSMiddleware
 from vism_lib.controller import Controller
-from vism_lib.data.exchange import DataExchangeCertMessage
+from vism_lib.data.exchange import DataExchangeCertMessage, DataExchange
 from vism_lib.errors import VismException
 
 
 class VismACMEController(Controller):
     """Controller class for VISM ACME server operations."""
 
-    configClass = AcmeConfig
-    databaseClass = VismAcmeDatabase
-    config: AcmeConfig
+    def __init__(self, config: AcmeConfig, database: VismAcmeDatabase, data_exchange_module: DataExchange):
+        super().__init__(config)
+        acme_logger.info("Starting VISM ACME server")
 
-    def __init__(self):
-        super().__init__()
+        self.config = config
+        self.database = database
+        self.data_exchange_module = data_exchange_module
+
         self.api = FastAPI(lifespan=self.lifespan)
         self.setup_exception_handlers()
         self.setup_middleware()
         self.setup_routes()
-
-        self.database: VismAcmeDatabase = self.database
 
     async def _get_order_for_csr(self, order_id: str) -> OrderEntity:
         """Get and validate order for CSR processing."""
@@ -42,7 +45,7 @@ class VismACMEController(Controller):
 
         order_expired = order.status == OrderStatus.EXPIRED
         if not order_expired:
-            order_expired = datetime.fromisoformat(order.expires) < datetime.now(timezone.utc)
+            order_expired = order.expires < datetime.now(tz=timezone.utc)
 
         if order_expired:
             order.status = OrderStatus.EXPIRED
@@ -118,8 +121,9 @@ class VismACMEController(Controller):
     @asynccontextmanager
     async def lifespan(self, _api: FastAPI):
         """Manage application lifespan with an async context manager."""
-        await self.setup_data_exchange_module()
-        asyncio.create_task(self.data_exchange_module.receive_cert(callback=self.handle_chain_from_ca))
+        asyncio.create_task(
+            self.data_exchange_module.receive_messages(DataExchangeCertMessage, self.handle_chain_from_ca)
+        )
         yield
         await asyncio.shield(self.data_exchange_module.cleanup(full=True))
 
@@ -180,6 +184,32 @@ class VismACMEController(Controller):
         self.api.include_router(authz_router.router)
         self.api.include_router(pub_router.router)
 
+def app() -> FastAPI:
+    config = AcmeConfig.read_config()
+    validation_module = DataValidation(validation_key=config.security.data_validation_key)
 
-controller = VismACMEController()
-app = controller.api
+    db_url = URL.create(
+        drivername=config.database.driver,
+        username=config.database.username,
+        password=config.database.password,
+        host=config.database.host,
+        port=config.database.port,
+        database=config.database.database
+    )
+    db_engine = create_engine(db_url, echo=False, pool_pre_ping=True)
+    database = VismAcmeDatabase(engine=db_engine, validation_module=validation_module)
+
+    rabbitmq_client = RabbitMQClient(config.rabbitmq)
+    data_exchange_module = RabbitMQExchange(
+        validation_module=validation_module,
+        rabbitmq_client=rabbitmq_client,
+        config=config.rabbitmq
+    )
+
+    controller = VismACMEController(
+        config=config,
+        database=database,
+        data_exchange_module=data_exchange_module
+    )
+
+    return controller.api
