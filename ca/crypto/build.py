@@ -178,8 +178,8 @@ def build_tbs_cert_list(
         days: int,
         signature_algorithm: rfc5280.AlgorithmIdentifier,
         revoked_certificate_entries: list[RevokedCertificateEntry],
+        crl_number: int,
         *,
-        crl_number: int | None = None,
         now: datetime | None = None,
         aia_ext: rfc5280.Extension | None = None,
 ) -> rfc5280.TBSCertList:
@@ -189,10 +189,6 @@ def build_tbs_cert_list(
 
     signature_algorithm = signature_algorithm
     revoked_certificates = RevokedCertificates()
-
-    if crl_number is None:
-        # CRL number needs to be monotonically increasing
-        crl_number = time.time()
 
     for revoked_cert in revoked_certificate_entries:
         revoked_certificates.append(revoked_cert)
@@ -215,7 +211,7 @@ def build_tbs_cert_list(
     tbs_crl['version'] = CRL_VERSION
     tbs_crl["signature"] = signature_algorithm
     tbs_crl["issuer"] = issuer_cert["tbsCertificate"]["subject"]
-    tbs_crl["thisUpdate"] = get_ans1_time(now - timedelta(hours=1))
+    tbs_crl["thisUpdate"] = get_ans1_time(now)
     tbs_crl["nextUpdate"] = get_ans1_time(now + timedelta(days=days))
     tbs_crl["revokedCertificates"] = revoked_certificates
     tbs_crl['crlExtensions'] = crl_extensions

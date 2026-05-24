@@ -121,13 +121,7 @@ def _make_manager(name: str, x509_cfg: X509Config, key: ec.EllipticCurvePrivateK
     )
 
 
-# =========================================================================
-# Cert / extension inspection helpers
-# =========================================================================
-
 def _crypto_cert(asn1_cert: rfc5280.Certificate) -> x509.Certificate:
-    """Reparse a pyasn1 Certificate through the cryptography library so
-    we can call high-level methods like verify_directly_issued_by."""
     return x509.load_der_x509_certificate(der_encoder(asn1_cert))
 
 
@@ -137,10 +131,6 @@ def _get_ext_in_tbs(tbs: rfc5280.TBSCertificate, oid: str) -> rfc5280.Extension 
             return ext
     return None
 
-
-# =========================================================================
-# Fixtures
-# =========================================================================
 
 @pytest.fixture
 def root_key() -> ec.EllipticCurvePrivateKey:
@@ -173,16 +163,9 @@ def intermediate_manager(intermediate_key) -> CertificateManager:
     return _make_manager("intermediate", cfg, intermediate_key)
 
 
-# =========================================================================
-# CertificateManager.__init__
-# =========================================================================
-
 class TestCertificateManagerInit:
 
     def test_loads_der_public_key(self, root_key):
-        """The new constructor takes a PublicKey whose public_bytes()
-        returns DER. CertificateManager parses those bytes into a
-        cryptography public key."""
         privkey = LocalPrivKey(root_key)
         pubkey = LocalPubKey(root_key.public_key())
         mgr = CertificateManager(
@@ -194,10 +177,6 @@ class TestCertificateManagerInit:
         assert isinstance(mgr.public_key, ec.EllipticCurvePublicKey)
 
     def test_falls_back_to_pem_loader(self, root_key):
-        """CertificateManager.__init__ tries load_der_public_key first,
-        then load_pem_public_key. Documents the fallback: any PublicKey
-        implementation returning PEM bytes still works."""
-
         class PemPubKey(LocalPubKey):
             def public_bytes(self) -> bytes:
                 return self._crypto_key.public_bytes(
@@ -216,8 +195,6 @@ class TestCertificateManagerInit:
         assert isinstance(mgr.public_key, ec.EllipticCurvePublicKey)
 
     def test_externally_managed_requires_cert_and_crl(self, root_key):
-        """Externally-managed certs need both certificate_pem and crl_pem
-        in their config."""
         cfg = _cert_config("ext", _ca_x509_config("External"))
         cfg.externally_managed = True
         with pytest.raises(VismBreakingException):
@@ -242,10 +219,6 @@ class TestCertificateManagerInit:
         assert mgr.config.externally_managed is True
 
 
-# =========================================================================
-# create_csr
-# =========================================================================
-
 class TestCreateCsr:
 
     def test_returns_certification_request(self, root_manager):
@@ -268,24 +241,18 @@ class TestCreateCsr:
         assert spki_der == expected
 
     def test_csr_round_trips_through_der(self, root_manager):
-        """A CSR that cannot be DER-encoded is unusable downstream
-        (sign_csr_der parses CSRs from DER)."""
         csr = root_manager.create_csr()
         der = der_encoder(csr)
         decoded, _ = der_decoder(der, asn1Spec=rfc2986.CertificationRequest())
         assert int(decoded["certificationRequestInfo"]["version"]) == 0
 
     def test_csr_signature_verifies(self, root_manager, root_key):
-        """The CSR's signature must verify against the CSR's own public
-        key (RFC 2986 §4.2: a CSR is self-signed by the requester)."""
         csr_asn1 = root_manager.create_csr()
         csr_der = der_encoder(csr_asn1)
         csr = x509.load_der_x509_csr(csr_der)
         assert csr.is_signature_valid
 
     def test_csr_includes_configured_extensions(self, root_manager):
-        """create_csr should put all of basic_constraints, key_usage,
-        AIA, and CRLDP into the requested extensions."""
         csr_asn1 = root_manager.create_csr()
         csr_der = der_encoder(csr_asn1)
         csr = x509.load_der_x509_csr(csr_der)
@@ -296,9 +263,6 @@ class TestCreateCsr:
         assert OID_CRL_DISTRIBUTION_POINTS in ext_oids
 
     def test_csr_omits_unconfigured_extensions(self, root_key):
-        """Configured extensions show up in the CSR; unconfigured ones
-        don't. SAN is the easiest to opt out of (it's optional)."""
-        # Use a CA config but with no AIA/CRLDP to test the opt-out path
         cfg = _ca_x509_config("CSR Test CA", aia_url=None, crl_url=None)
         mgr = _make_manager("csr-test", cfg, root_key)
         csr_asn1 = mgr.create_csr()
@@ -307,7 +271,6 @@ class TestCreateCsr:
         ext_oids = {ext.oid.dotted_string for ext in csr.extensions}
         assert OID_AUTHORITY_INFO_ACCESS not in ext_oids
         assert OID_CRL_DISTRIBUTION_POINTS not in ext_oids
-        # BC and KU are still configured
         assert OID_BASIC_CONSTRAINTS in ext_oids
         assert OID_KEY_USAGE in ext_oids
 
@@ -347,7 +310,6 @@ class TestSignCsrSelfSignedRoot:
         assert der_encoder(tbs["subject"]) == der_encoder(tbs["issuer"])
 
     def test_no_duplicate_extensions(self, root_manager):
-        """RFC 5280 §4.2: no duplicate extensions in a single cert."""
         csr = root_manager.create_csr()
         crt = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         oids = [str(e["extnID"]) for e in crt["tbsCertificate"]["extensions"]]
@@ -361,9 +323,6 @@ class TestSignCsrSelfSignedRoot:
         assert bc.value.ca is True
 
     def test_signature_algorithm_in_outer_matches_tbs(self, root_manager):
-        """RFC 5280 §4.1.1.2 / §4.1.2.3: the signatureAlgorithm in the
-        outer Certificate MUST match the signature field in the
-        TBSCertificate."""
         csr = root_manager.create_csr()
         crt = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         assert der_encoder(crt["signatureAlgorithm"]) == der_encoder(crt["tbsCertificate"]["signature"])
@@ -377,9 +336,6 @@ class TestSignCsrIntermediate:
         return root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
 
     def test_signature_verifies_against_root(self, root_manager, intermediate_manager, signed_root):
-        """The intermediate's signature must verify against the root's
-        public key (RFC 5280 §6.1: a chain link is a successful signature
-        check)."""
         csr = intermediate_manager.create_csr()
         crt_asn1 = root_manager.sign_csr(signer=signed_root, csr=csr, days=1825, is_ca=True)
         crt = _crypto_cert(crt_asn1)
@@ -399,7 +355,6 @@ class TestSignCsrIntermediate:
         )
 
     def test_has_aki(self, root_manager, intermediate_manager, signed_root):
-        """RFC 5280 §4.2.1.1: non-self-signed certs MUST include AKI."""
         csr = intermediate_manager.create_csr()
         crt = root_manager.sign_csr(signer=signed_root, csr=csr, days=1825, is_ca=True)
         crypto_crt = _crypto_cert(crt)
@@ -417,9 +372,6 @@ class TestSignCsrIntermediate:
         assert aki.key_identifier == ski.key_identifier
 
     def test_intermediate_has_its_own_aia_not_roots(self, root_manager, intermediate_manager, signed_root):
-        """An intermediate carries its own AIA (from its CSR), not the
-        root's. Verifies the is_ca gating in build_tbs_certificate
-        worked end-to-end."""
         csr = intermediate_manager.create_csr()
         crt = root_manager.sign_csr(signer=signed_root, csr=csr, days=1825, is_ca=True)
         crypto_crt = _crypto_cert(crt)
@@ -429,23 +381,13 @@ class TestSignCsrIntermediate:
         assert any("intermediate" in u for u in urls)
 
     def test_no_duplicate_extensions(self, root_manager, intermediate_manager, signed_root):
-        """Regression for the AIA/CRLDP-duplication bug found earlier."""
         csr = intermediate_manager.create_csr()
         crt = root_manager.sign_csr(signer=signed_root, csr=csr, days=1825, is_ca=True)
         oids = [str(e["extnID"]) for e in crt["tbsCertificate"]["extensions"]]
         assert len(oids) == len(set(oids))
 
 
-# =========================================================================
-# sign_csr — leaf signed by intermediate (signer=intermediate, is_ca=False)
-# =========================================================================
-
 class TestSignCsrLeaf:
-    """Leaf CSRs come from external clients (e.g. ACME), not from the
-    issuing CA's create_csr. They include subject-side extensions (SAN,
-    key usage) but not issuer-side ones (AIA, CRLDP) — those are added
-    by the issuing CA in sign_csr."""
-
     @pytest.fixture
     def chain(self, root_manager, intermediate_manager):
         root_csr = root_manager.create_csr()
@@ -508,8 +450,6 @@ class TestSignCsrLeaf:
         assert len(oids) == len(set(oids))
 
     def test_leaf_san_carried_from_csr(self, intermediate_manager, leaf_key, chain):
-        """SAN in the CSR (the leaf's identity) should pass through into
-        the issued cert."""
         csr = _make_external_leaf_csr(leaf_key, "leaf.example.com", dns=["leaf.example.com", "www.leaf.example.com"])
         crt = intermediate_manager.sign_csr(
             signer=chain["intermediate"], csr=csr, days=90, is_ca=False
@@ -520,29 +460,18 @@ class TestSignCsrLeaf:
         assert dns_names == {"leaf.example.com", "www.leaf.example.com"}
 
 
-# =========================================================================
-# sign_csr_der — DER pass-through equivalence
-# =========================================================================
-
 class TestSignCsrDer:
 
     def test_equivalent_to_sign_csr(self, root_manager):
-        """sign_csr_der is sign_csr with the CSR pre-parsed; the result
-        should be structurally identical aside from the random serial."""
         csr = root_manager.create_csr()
         csr_der = der_encoder(csr)
 
         cert_a = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         cert_b = root_manager.sign_csr_der(signer=None, csr_der=csr_der, days=3650, is_ca=True)
 
-        # Subjects, issuers, SPKIs should match. Serials and signatures will not.
         for field in ("subject", "issuer", "subjectPublicKeyInfo"):
             assert der_encoder(cert_a["tbsCertificate"][field]) == der_encoder(cert_b["tbsCertificate"][field])
 
-
-# =========================================================================
-# create_crl
-# =========================================================================
 
 class TestCreateCrl:
 
@@ -552,8 +481,6 @@ class TestCreateCrl:
         return root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
 
     def _revoked_entry(self, serial: int, revocation_date: datetime, reason: str = "keyCompromise") -> IssuedCertificate:
-        """Build an IssuedCertificate as the DB layer would. The crypto
-        code only reads serial, revocation_date, and revocation_reason."""
         entry = MagicMock(spec=IssuedCertificate)
         entry.serial = der_encoder(univ.Integer(serial))
         entry.revocation_date = revocation_date
@@ -561,18 +488,18 @@ class TestCreateCrl:
         return entry
 
     def test_empty_crl_builds(self, root_manager, signed_root):
-        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=[])
+        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=[], crl_number=1)
         assert isinstance(crl_asn1, rfc5280.CertificateList)
 
     def test_crl_signature_verifies_against_root(self, root_manager, signed_root):
-        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=[])
+        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=[], crl_number=1)
         crl_der = der_encoder(crl_asn1)
         crl = x509.load_der_x509_crl(crl_der)
         root_crypto = _crypto_cert(signed_root)
         assert crl.is_signature_valid(root_crypto.public_key())
 
     def test_crl_issuer_matches_signer_subject(self, root_manager, signed_root):
-        crl = root_manager.create_crl(signer=signed_root, revoked_certs=[])
+        crl = root_manager.create_crl(signer=signed_root, revoked_certs=[], crl_number=1)
         assert der_encoder(crl["tbsCertList"]["issuer"]) == der_encoder(signed_root["tbsCertificate"]["subject"])
 
     def test_revoked_entries_present(self, root_manager, signed_root):
@@ -581,7 +508,7 @@ class TestCreateCrl:
             self._revoked_entry(102, datetime(2025, 6, 2, tzinfo=timezone.utc)),
             self._revoked_entry(103, datetime(2025, 6, 3, tzinfo=timezone.utc)),
         ]
-        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=revoked)
+        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=revoked, crl_number=1)
         crl_der = der_encoder(crl_asn1)
         crl = x509.load_der_x509_crl(crl_der)
         serials = {entry.serial_number for entry in crl}
@@ -591,7 +518,7 @@ class TestCreateCrl:
         revoked = [
             self._revoked_entry(200, datetime(2025, 6, 1, tzinfo=timezone.utc), reason="keyCompromise"),
         ]
-        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=revoked)
+        crl_asn1 = root_manager.create_crl(signer=signed_root, revoked_certs=revoked, crl_number=1)
         crl_der = der_encoder(crl_asn1)
         crl = x509.load_der_x509_crl(crl_der)
         entry = next(iter(crl))
@@ -599,19 +526,11 @@ class TestCreateCrl:
         assert ext.value.reason == x509.ReasonFlags.key_compromise
 
     def test_crl_signature_algorithm_in_outer_matches_tbs(self, root_manager, signed_root):
-        crl = root_manager.create_crl(signer=signed_root, revoked_certs=[])
+        crl = root_manager.create_crl(signer=signed_root, revoked_certs=[], crl_number=1)
         assert der_encoder(crl["signatureAlgorithm"]) == der_encoder(crl["tbsCertList"]["signature"])
 
 
-# =========================================================================
-# Three-level chain validity (root -> intermediate -> leaf, fully signed)
-# =========================================================================
-
 class TestChainValidity:
-    """End-to-end: build a complete signed chain and verify the
-    cryptographic links between every pair. This is the highest-level
-    integration test we have without an actual deployment."""
-
     @pytest.fixture
     def signed_chain(self, root_manager, intermediate_manager, leaf_key):
         root_csr = root_manager.create_csr()
@@ -643,9 +562,6 @@ class TestChainValidity:
         signed_chain["leaf"].verify_directly_issued_by(signed_chain["intermediate"])
 
     def test_wrong_parent_fails(self, signed_chain):
-        """The leaf must NOT verify as issued by the root directly
-        (skipping the intermediate). This catches a subtle class of bug
-        where the issuer name happens to match but the key doesn't."""
         with pytest.raises(Exception):
             signed_chain["leaf"].verify_directly_issued_by(signed_chain["root"])
 
@@ -658,19 +574,12 @@ class TestChainValidity:
         assert len(serials) == 3
 
     def test_chain_dates_well_ordered(self, signed_chain):
-        """Each cert in a real chain has its own validity window. None
-        of the assertions here are RFC-mandated, but they catch obvious
-        clock or duration mistakes."""
-        # All notBefores are in the past (backdated by 1h)
         now = datetime.now(timezone.utc)
         for cert in signed_chain.values():
             assert cert.not_valid_before_utc < now
             assert cert.not_valid_after_utc > now
 
     def test_three_distinct_subject_keys(self, signed_chain):
-        """Three different EC keys yield three different SPKIs in the
-        certs — the manager isn't accidentally signing with someone
-        else's public key."""
         pks = {
             signed_chain["root"].public_key().public_bytes(
                 encoding=serialization.Encoding.DER,

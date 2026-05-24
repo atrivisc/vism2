@@ -17,7 +17,7 @@ from cryptography.hazmat.bindings._rust import ObjectIdentifier
 from pkcs11.util.ec import encode_named_curve_parameters
 from pyasn1.type import univ, char, tag
 from pyasn1_modules import rfc5280
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from vism_lib.config import VismConfig
@@ -116,6 +116,9 @@ class X509ConfigSubjectName:
     locality: str = None
     organization: str = None
 
+    def is_empty(self):
+        return all(value is None for value in self.__dict__.values())
+
     @staticmethod
     def _add_rdn(rdn_seq: rfc5280.RDNSequence, attribute_type: ObjectIdentifier, value: str):
         if value:
@@ -202,6 +205,14 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
             basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
 
         return basic_constraints
+
+    @field_validator("path_length")
+    @classmethod
+    def validate_algorithm(cls, v: int):
+        if v < 0:
+            raise ValueError(f"path_length must be greater than or equal to 0, got {v}")
+
+        return v
 
 
 @dataclass
@@ -372,6 +383,15 @@ class X509Config:
 
     leaf_authority_info_access: X509ConfigAuthorityInfoAccess = None
 
+    @model_validator(mode='after')
+    def check_passwords_match(self):
+        if self.subject_name.is_empty() and not self.subject_alternative_name.critical:
+            raise ValueError("SAN must be critical if subject name is empty")
+
+        if self.subject_name.is_empty() and self.basic_constraints.ca:
+            raise ValueError("CA can not have empty subject name")
+
+        return self
 
 @dataclass
 class CertificateConfig:

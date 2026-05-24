@@ -494,7 +494,7 @@ class TestHsmBackedChainIssuance:
         root_csr = root_mgr.create_csr()
         root_cert = root_mgr.sign_csr(signer=None, csr=root_csr, days=3650, is_ca=True)
 
-        crl_asn1 = root_mgr.create_crl(signer=root_cert, revoked_certs=[])
+        crl_asn1 = root_mgr.create_crl(signer=root_cert, revoked_certs=[], crl_number=1)
         crl = x509.load_der_x509_crl(der_encoder(crl_asn1))
         root_crypto = x509.load_der_x509_certificate(der_encoder(root_cert))
         assert crl.is_signature_valid(root_crypto.public_key())

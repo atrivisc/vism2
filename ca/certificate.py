@@ -8,7 +8,7 @@ from pyasn1.codec.der.decoder import decode as der_decoder
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.type import univ
 from pyasn1.type.base import Asn1Item
-from pyasn1_modules import rfc2986, rfc5280, rfc2315, rfc4055
+from pyasn1_modules import rfc2986, rfc5280, rfc2315
 from pyasn1_modules.rfc5280 import CertificateList
 
 from ca.abc import KeyManager, PrivateKey, PublicKey
@@ -26,15 +26,8 @@ _revocation_reason_map = {
     "superseded": rfc5280.CRLReason("superseded"),
     "cessationOfOperation": rfc5280.CRLReason("cessationOfOperation"),
     "certificateHold": rfc5280.CRLReason("certificateHold"),
-    "removeFromCRL": rfc5280.CRLReason("removeFromCRL"),
     "privilegeWithdrawn": rfc5280.CRLReason("privilegeWithdrawn"),
     "aACompromise": rfc5280.CRLReason("aACompromise"),
-}
-
-_rsa_pss_map = {
-    "SHA256": rfc4055.rSASSA_PSS_SHA256_Identifier,
-    "SHA384": rfc4055.rSASSA_PSS_SHA384_Identifier,
-    "SHA512": rfc4055.rSASSA_PSS_SHA512_Identifier,
 }
 
 class CertificateManager:
@@ -162,7 +155,7 @@ class CertificateManager:
     def load_external_crl_der(self) -> bytes:
         return x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
 
-    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate], *, crl_number: int | None = None, now: datetime | None = None) -> CertificateList:
+    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate], crl_number: int, *, now: datetime | None = None) -> CertificateList:
         revoked_cert_entries = [
             build_revoked_certificate_entry(
                 serial=der_decoder(issued_cert.serial, asn1Spec=rfc2315.SerialNumber())[0],

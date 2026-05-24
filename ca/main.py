@@ -211,17 +211,13 @@ class VismCA(Controller):
                     f"Certificate {cert.config.name} needs to be manually signed "
                     f"by the external issuer {issuer_cert.config.name}. CSR:\n{csr_pem}"
                 )
-        issuer_asn1_cert = (
-            der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
-            if issuer_db_entity.crt_der is not None else None
-        )
 
         if db_entry.crt_der is None:
-            self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
             issuer_asn1_cert = (
                 der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
                 if issuer_db_entity.crt_der is not None else None
             )
+            self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
 
         if db_entry.crl_der is None:
             self._issue_crl(cert, db_entry, now=now)
@@ -245,8 +241,9 @@ class VismCA(Controller):
         ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
         revoked = self.database.get_revoked_certificates_for_issuer(db_entry.id)
         own_asn1_cert = der_decoder(db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
-        crl = cert.create_crl(own_asn1_cert, revoked, now=now)
+        crl = cert.create_crl(own_asn1_cert, revoked, crl_number=db_entry.crl_number, now=now)
         db_entry.crl_der = der_encoder(crl)
+        db_entry.crl_number += 1
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""

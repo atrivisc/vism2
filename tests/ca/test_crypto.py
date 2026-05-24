@@ -697,6 +697,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
         )
         assert int(tbs["version"]) == CRL_VERSION  # v2 (encoded value 1)
@@ -708,6 +709,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
         )
         assert der_encoder(tbs["issuer"]) == der_encoder(issuer_cert["tbsCertificate"]["subject"])
@@ -720,11 +722,12 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
             now=now,
         )
         from ca.crypto.util import asn1_time_to_datetime
-        assert asn1_time_to_datetime(tbs["thisUpdate"]) == now - timedelta(hours=1)
+        assert asn1_time_to_datetime(tbs["thisUpdate"]) == now
 
     def test_next_update_days_after_now(self, issuer_cert):
         now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -734,6 +737,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
             now=now,
         )
@@ -747,6 +751,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
         )
         from ca.crypto.util import asn1_time_to_datetime
@@ -760,6 +765,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=entries,
         )
         serials = sorted(int(e["userCertificate"]) for e in tbs["revokedCertificates"])
@@ -774,6 +780,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=[],
         )
         der = der_encoder(tbs)
@@ -786,7 +793,7 @@ class TestBuildTbsCertList:
         )
         tbs = build_tbs_cert_list(
             issuer_cert=issuer_cert, days=7, signature_algorithm=sig,
-            revoked_certificate_entries=[],
+            revoked_certificate_entries=[], crl_number=1
         )
         assert der_encoder(tbs["signature"]) == der_encoder(sig)
 
@@ -798,6 +805,7 @@ class TestBuildTbsCertList:
             signature_algorithm=get_algorithm_identifier(
                 ec.generate_private_key(ec.SECP256R1()).public_key(), "SHA256"
             ),
+            crl_number=1,
             revoked_certificate_entries=entries,
         )
         der = der_encoder(tbs)
