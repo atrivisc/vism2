@@ -38,7 +38,7 @@ def main() -> Optional[Any]:
 
     if args.component == 'acme':
         if args.acme_command == 'start':
-            uvicorn.run("acme:app", host="0.0.0.0", port=8080, reload=True)
+            uvicorn.run("acme:app", host="0.0.0.0", port=8080)
     if args.component == 'ca':
         from ca.main import main
         if args.ca_command == 'start':
