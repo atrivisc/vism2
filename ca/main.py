@@ -47,7 +47,6 @@ class VismCA(Controller):
         self.data_exchange_module = data_exchange_module
 
         self.election = election
-        self.election.register_handler("on_follower_heartbeat", self._on_follower_heartbeat)
         self.election.register_handler("on_leader_heartbeat", self._on_leader_heartbeat)
         self.election.register_handler("on_elected", self._on_elected)
         self.election.register_handler("on_election_lost", self._on_election_lost)
@@ -57,11 +56,7 @@ class VismCA(Controller):
 
         super().__init__(config)
 
-    async def _on_follower_heartbeat(self):
-        ca_logger.info("I am a follower.")
-
     async def _on_leader_heartbeat(self):
-        ca_logger.info("I am the leader.")
         for cert in self.certificates.values():
             if cert.config.externally_managed:
                 continue
@@ -75,6 +70,8 @@ class VismCA(Controller):
                 ca_logger.info(f"Updated CRL for certificate {cert.config.name}. Next update: {cert.next_crl_update}")
 
     async def _on_elected(self):
+        ca_logger.info("I have been elected as the leader. Starting to listen for CSRs.")
+
         await self.s3.create_bucket()
         self.certificates = await self.load_certificates()
         await self.data_exchange_module.receive_messages(DataExchangeCSRMessage, self.handle_csr_from_acme)
