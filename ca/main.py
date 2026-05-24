@@ -224,7 +224,7 @@ class VismCA(Controller):
             )
 
         if db_entry.crl_der is None:
-            self._issue_crl(cert, issuer_cert, db_entry, issuer_asn1_cert, now=now)
+            self._issue_crl(cert, db_entry, now=now)
 
         return issuer_db_entity, db_entry
 
@@ -241,10 +241,11 @@ class VismCA(Controller):
             subject=der_encoder(crt['tbsCertificate']["subject"]),
         ))
 
-    def _issue_crl(self, cert, issuer_cert, db_entry, issuer_asn1_cert, *, now: datetime | None = None):
+    def _issue_crl(self, cert, db_entry, *, now: datetime | None = None):
         ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
         revoked = self.database.get_revoked_certificates_for_issuer(db_entry.id)
-        crl = issuer_cert.create_crl(issuer_asn1_cert, revoked, now=now)
+        own_asn1_cert = der_decoder(db_entry.crt_der, asn1Spec=rfc5280.Certificate())[0]
+        crl = cert.create_crl(own_asn1_cert, revoked, now=now)
         db_entry.crl_der = der_encoder(crl)
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):

@@ -40,11 +40,11 @@ def main() -> Optional[Any]:
         if args.acme_command == 'start':
             uvicorn.run("acme:app", host="0.0.0.0", port=8080, reload=True)
     if args.component == 'ca':
-        import ca
+        from ca.main import main
         if args.ca_command == 'start':
-            ca.main()
+            main()
         elif args.ca_command == 'revoke':
-            ca.main("revoke", args.serial, args.reason)
+            main("revoke", args.serial, args.reason)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 rabbitmq:
-  host: "{{ env['RABBITMQ_HOST'] }}"
+  host: "127.0.0.1"
   port: "5672"
   user: "vism_acme"
   password: "vism_acme"
