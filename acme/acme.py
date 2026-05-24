@@ -10,6 +10,7 @@ from sqlalchemy import URL, create_engine
 from starlette.responses import JSONResponse
 from vism_lib.data.validation import DataValidation
 from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
+from vism_lib.s3 import AsyncS3Client
 
 from acme.config import AcmeConfig, acme_logger
 from acme.database import VismAcmeDatabase
@@ -24,13 +25,20 @@ from vism_lib.errors import VismException
 class VismACMEController(Controller):
     """Controller class for VISM ACME server operations."""
 
-    def __init__(self, config: AcmeConfig, database: VismAcmeDatabase, data_exchange_module: DataExchange):
+    def __init__(
+            self,
+            config: AcmeConfig,
+            database: VismAcmeDatabase,
+            data_exchange_module: DataExchange,
+            s3: AsyncS3Client,
+    ):
         super().__init__(config)
         acme_logger.info("Starting VISM ACME server")
 
         self.config = config
         self.database = database
         self.data_exchange_module = data_exchange_module
+        self.s3 = s3
 
         self.api = FastAPI(lifespan=self.lifespan)
         self.setup_exception_handlers()
@@ -214,10 +222,13 @@ def app() -> FastAPI:
         config=config.rabbitmq
     )
 
+    s3_client = AsyncS3Client(config.s3)
+
     controller = VismACMEController(
         config=config,
         database=database,
-        data_exchange_module=data_exchange_module
+        data_exchange_module=data_exchange_module,
+        s3=s3_client
     )
 
     logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
