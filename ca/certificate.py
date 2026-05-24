@@ -2,6 +2,7 @@ from datetime import datetime
 
 import cryptography
 import cryptography.exceptions
+from cron_converter import Cron
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from pyasn1.codec.der.decoder import decode as der_decoder
@@ -28,6 +29,7 @@ _revocation_reason_map = {
     "certificateHold": rfc5280.CRLReason("certificateHold"),
     "privilegeWithdrawn": rfc5280.CRLReason("privilegeWithdrawn"),
     "aACompromise": rfc5280.CRLReason("aACompromise"),
+    "removeFromCRL": rfc5280.CRLReason("removeFromCRL"),
 }
 
 class CertificateManager:
@@ -48,6 +50,10 @@ class CertificateManager:
         self._key_manager = key_manager
 
         self.config = config
+
+        self.crl_update_schedule = Cron(config.crl_update_cron).schedule()
+        self.next_crl_update = self.crl_update_schedule.next()
+
         self.public_key_bytes = pubkey.public_bytes()
 
         try:

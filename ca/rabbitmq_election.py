@@ -1,10 +1,9 @@
 """Main Vism CA class and entrypoint."""
 
 import asyncio
-from datetime import datetime
 import aio_pika
 from vism_lib.rabbitmq import RabbitMQClient
-from ca.abc import AsyncCallable, Election
+from ca.abc import Election
 from ca.config import ca_logger
 
 class RabbitMQElection(Election):
@@ -16,12 +15,7 @@ class RabbitMQElection(Election):
         self._leader_queue = leader_queue
         self._rabbitmq_client = rabbitmq_client
 
-    async def leader_heartbeat(self) -> None:
-        now = datetime.now().strftime("%H:%M:%S")
-        ca_logger.info(f"I am the leader — heartbeat at {now}")
-
-    async def follower_heartbeat(self) -> None:
-        ca_logger.info("Nothing to do — I am secondary")
+        super().__init__()
 
     async def _try_become_leader(self) -> bool:
         try:
@@ -47,25 +41,24 @@ class RabbitMQElection(Election):
     async def _on_leader_message(self, *args, **kwargs):
         pass
 
-    async def resign(self, resign_callback: AsyncCallable) -> None:
+    async def resign(self) -> None:
         if self.is_leader:
             ca_logger.info("Resigning as leader.")
             self.is_leader = False
 
         await self._rabbitmq_client.close()
-        await resign_callback()
+        await self.notify_handler("on_resign")
 
-    async def run(self, resign_callback: AsyncCallable, leader_callback: AsyncCallable, follower_callback: AsyncCallable):
+    async def run(self):
         try:
             while not self.shutdown_event.is_set():
                 if not self.is_leader:
                     won = await self._try_become_leader()
                     if not won:
-                        await self.follower_heartbeat()
-                        await follower_callback()
+                        await self.notify_handlers(events=["on_follower_heartbeat", "on_election_lost"])
                         await asyncio.sleep(self.election_interval)
                     else:
-                        await leader_callback()
+                        await self.notify_handler("on_elected")
                 else:
                     channel = await self._rabbitmq_client.channel()
                     if channel and channel.is_closed:
@@ -73,11 +66,11 @@ class RabbitMQElection(Election):
                         self.is_leader = False
                         continue
 
-                    await self.leader_heartbeat()
+                    await self.notify_handler("on_leader_heartbeat")
                     await asyncio.sleep(self.election_interval)
         except Exception as e:
             ca_logger.error(f"Stopping rabbitmq leadership loop: {e}")
             raise e
         finally:
-            await self.resign(resign_callback)
+            await self.resign()
             await self._rabbitmq_client.close()

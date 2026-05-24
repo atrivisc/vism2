@@ -3,7 +3,7 @@ from typing import Optional
 from pyasn1.codec.der.encoder import encode as der_encoder
 
 from pyasn1_modules import rfc5280
-from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary, DateTime
+from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
 from vism_lib.database import Base, VismDatabase, TZDateTime
@@ -73,6 +73,7 @@ class CertificateEntity(Base):
             "crt_der": self.crt_der.hex() if self.crt_der else None,
             "crl_der": self.crl_der.hex() if self.crl_der else None,
         }
+
 
 class VismCADatabase(VismDatabase):
     """Database interface for Vism CA operations."""

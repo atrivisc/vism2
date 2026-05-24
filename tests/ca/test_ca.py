@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1_modules import rfc5280
 
+from ca.abc import Election
 from ca.config import (
     CAConfig,
     CertificateConfig,
@@ -41,23 +42,15 @@ from tests.ca._helpers import (
 )
 
 
-class FakeElection:
+class FakeElection(Election):
     is_leader = False
     election_interval = 30
 
     def __init__(self):
         self.shutdown_event = asyncio.Event()
+        super().__init__()
 
-    async def follower_heartbeat(self):
-        pass
-
-    async def leader_heartbeat(self):
-        pass
-
-    async def resign(self, resign_callback):
-        await resign_callback()
-
-    async def run(self, resign_callback, leader_callback, follower_callback):
+    async def run(self):
         pass
 
 
@@ -367,31 +360,6 @@ class TestSaveCertificate:
         asyncio.run(ca.save_certificate("root", entity))
         assert db.get_cert_by_name("root") is not None
 
-
-class TestLifecycleCallbacks:
-
-    def test_async_shutdown_cleans_up_data_exchange(self, db, key_manager):
-        ca, _, dx = _make_visma_ca(db, key_manager, _cert_config("root"))
-        asyncio.run(ca.async_shutdown())
-        assert dx.cleanup_calls == [True]
-
-    def test_follower_run_cleans_up_data_exchange(self, db, key_manager):
-        ca, _, dx = _make_visma_ca(db, key_manager, _cert_config("root"))
-        asyncio.run(ca.follower_run())
-        assert dx.cleanup_calls == [True]
-
-    def test_leader_run_subscribes_to_csr_messages(self, db, key_manager):
-        ca, s3, dx = _make_visma_ca(db, key_manager, _cert_config("root"))
-        asyncio.run(ca.leader_run())
-        assert s3.bucket_created is True
-        assert len(dx.subscriptions) == 1
-        assert dx.subscriptions[0].message_class is DataExchangeCSRMessage
-        assert "root" in ca.certificates
-
-
-# =========================================================================
-# TestLoadCertificate
-# =========================================================================
 
 class TestLoadCertificate:
 

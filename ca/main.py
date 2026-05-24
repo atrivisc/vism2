@@ -44,15 +44,48 @@ class VismCA(Controller):
         self.key_manager = key_manager
         self.s3 = s3_client
         self.database = database
-        self.election = election
         self.data_exchange_module = data_exchange_module
+
+        self.election = election
+        self.election.register_handler("on_follower_heartbeat", self._on_follower_heartbeat)
+        self.election.register_handler("on_leader_heartbeat", self._on_leader_heartbeat)
+        self.election.register_handler("on_elected", self._on_elected)
+        self.election.register_handler("on_election_lost", self._on_election_lost)
+        self.election.register_handler("on_resign", self._on_resign)
 
         self.certificates: dict[str, CertificateManager] = {}
 
         super().__init__(config)
 
-    async def update_crl(self):
-        pass
+    async def _on_follower_heartbeat(self):
+        ca_logger.info("I am a follower.")
+
+    async def _on_leader_heartbeat(self):
+        ca_logger.info("I am the leader.")
+        for cert in self.certificates.values():
+            if cert.config.externally_managed:
+                continue
+
+            if datetime.now(tz=timezone.utc) >= cert.next_crl_update:
+                db_entry = self.database.get_cert_by_name(cert.config.name)
+                db_entry = self._issue_crl(cert, db_entry)
+                self.database.save_to_db(db_entry)
+                cert.next_crl_update = cert.crl_update_schedule.next()
+                await self.s3.upload_bytes(db_entry.crl_der, f"crl/{cert.config.name}.crl")
+                ca_logger.info(f"Updated CRL for certificate {cert.config.name}. Next update: {cert.next_crl_update}")
+
+    async def _on_elected(self):
+        await self.s3.create_bucket()
+        self.certificates = await self.load_certificates()
+        await self.data_exchange_module.receive_messages(DataExchangeCSRMessage, self.handle_csr_from_acme)
+
+    async def _on_election_lost(self):
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=True)
+
+    async def _on_resign(self):
+        if self.data_exchange_module is not None:
+            await self.data_exchange_module.cleanup(full=True)
 
     def revoke_certificate(self, issued_cert: IssuedCertificate, reason: ValidRevocationReasons, *, now: datetime | None = None):
         serial = der_decoder(issued_cert.serial, asn1Spec=rfc5280.CertificateSerialNumber())[0]
@@ -96,28 +129,11 @@ class VismCA(Controller):
 
         return await self.data_exchange_module.send_message(cert_message)
 
-    async def leader_run(self):
-        await self.s3.create_bucket()
-        self.certificates = await self.load_certificates()
-        await self.data_exchange_module.receive_messages(DataExchangeCSRMessage, self.handle_csr_from_acme)
-
-    async def follower_run(self):
-        if self.data_exchange_module is not None:
-            await self.data_exchange_module.cleanup(full=True)
-
-    async def async_shutdown(self):
-        if self.data_exchange_module is not None:
-            await self.data_exchange_module.cleanup(full=True)
-
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""
         ca_logger.info("Starting CA")
         try:
-            resign_callback = self.async_shutdown
-            leader_callback = self.leader_run
-            follower_callback = self.follower_run
-
-            await self.election.run(resign_callback, leader_callback, follower_callback)
+            await self.election.run()
         except asyncio.CancelledError:
             ca_logger.info("CA shutting down.")
         except Exception as e:
@@ -217,10 +233,10 @@ class VismCA(Controller):
                 der_decoder(issuer_db_entity.crt_der, asn1Spec=rfc5280.Certificate())[0]
                 if issuer_db_entity.crt_der is not None else None
             )
-            self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
+            db_entry = self._issue_cert(cert, issuer_cert, issuer_db_entity, db_entry, issuer_asn1_cert, now=now)
 
         if db_entry.crl_der is None:
-            self._issue_crl(cert, db_entry, now=now)
+            db_entry = self._issue_crl(cert, db_entry, now=now)
 
         return issuer_db_entity, db_entry
 
@@ -237,6 +253,8 @@ class VismCA(Controller):
             subject=der_encoder(crt['tbsCertificate']["subject"]),
         ))
 
+        return db_entry
+
     def _issue_crl(self, cert, db_entry, *, now: datetime | None = None):
         ca_logger.info(f"Creating CRL for certificate {cert.config.name}")
         revoked = self.database.get_revoked_certificates_for_issuer(db_entry.id)
@@ -244,6 +262,7 @@ class VismCA(Controller):
         crl = cert.create_crl(own_asn1_cert, revoked, crl_number=db_entry.crl_number, now=now)
         db_entry.crl_der = der_encoder(crl)
         db_entry.crl_number += 1
+        return db_entry
 
 def main(function: str = None, serial: int | str = None, revoke_reason: ValidRevocationReasons = None):
     """Async entrypoint for the CA."""
@@ -295,8 +314,6 @@ def main(function: str = None, serial: int | str = None, revoke_reason: ValidRev
     try:
         if function is None:
             asyncio.run(ca.run())
-        elif function == "update_crl":
-            asyncio.run(ca.update_crl())
         elif function == "revoke":
             issued_cert = database.get_issued_certificate_by_serial(serial)
             if issued_cert is None:

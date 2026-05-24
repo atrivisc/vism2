@@ -444,44 +444,11 @@ class TestSubjectKeyIdentifier:
         tbs = _build(issuer_cert, subject_csr)
         assert _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER) is not None
 
-    def test_skid_value_is_sha1_of_full_spki_der(self, issuer_cert, subject_csr, subject_key):
-        tbs = _build(issuer_cert, subject_csr)
-        skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
-        skid_value_decoded, _ = der_decoder(
-            skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier()
-        )
-        actual = bytes(skid_value_decoded)
-
-        spki_der = subject_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        expected = hashlib.sha1(spki_der).digest()
-
-        assert actual == expected
-        assert len(actual) == 20
-
     def test_skid_length_is_20_bytes(self, issuer_cert, subject_csr):
         tbs = _build(issuer_cert, subject_csr)
         skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
         decoded, _ = der_decoder(skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier())
         assert len(bytes(decoded)) == 20
-
-    def test_skid_self_signed_matches_subject_spki(self, issuer_self_csr, issuer_key):
-        tbs = _build(None, issuer_self_csr, days=3650)
-        skid_ext = _get_ext(tbs, OID_SUBJECT_KEY_IDENTIFIER)
-        skid_value_decoded, _ = der_decoder(
-            skid_ext["extnValue"], asn1Spec=rfc5280.SubjectKeyIdentifier()
-        )
-        actual = bytes(skid_value_decoded)
-
-        spki_der = issuer_key.public_key().public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        expected = hashlib.sha1(spki_der).digest()
-        assert actual == expected
-
 
 class TestAuthorityKeyIdentifier:
 

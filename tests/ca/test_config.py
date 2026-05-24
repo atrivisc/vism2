@@ -210,14 +210,10 @@ class TestX509ConfigExtendedKeyUsage:
         assert str(ext["extnID"]) == OID_EXTENDED_KEY_USAGE
 
 
-# =========================================================================
-# X509ConfigBasicConstraints
-# =========================================================================
-
 class TestX509ConfigBasicConstraints:
 
     def test_ca_true_sets_ca_bool(self):
-        bc = X509ConfigBasicConstraints(ca=True, path_length=2)
+        bc = X509ConfigBasicConstraints(ca=True, path_length=2, critical=True)
         asn1 = bc.to_asn1()
         assert bool(asn1["cA"]) is True
 
@@ -227,14 +223,10 @@ class TestX509ConfigBasicConstraints:
         assert bool(asn1["cA"]) is False
 
     def test_path_length_value_carries_through(self):
-        bc = X509ConfigBasicConstraints(ca=True, path_length=3)
+        bc = X509ConfigBasicConstraints(ca=True, path_length=3, critical=True)
         assert int(bc.to_asn1()["pathLenConstraint"]) == 3
 
     def test_path_length_omitted_when_not_ca(self):
-        """RFC 5280 §4.2.1.9: 'CAs MUST NOT include the pathLenConstraint
-        field unless the cA boolean is asserted and the key usage
-        extension asserts the keyCertSign bit.' Currently to_asn1
-        unconditionally emits pathLenConstraint."""
         bc = X509ConfigBasicConstraints(ca=False, path_length=0)
         asn1 = bc.to_asn1()
         assert not asn1["pathLenConstraint"].hasValue()
@@ -267,7 +259,7 @@ class TestX509ConfigBasicConstraints:
         assert bool(ext["critical"]) is True
 
     def test_to_asn1_ext_oid(self):
-        bc = X509ConfigBasicConstraints(ca=True, path_length=0)
+        bc = X509ConfigBasicConstraints(ca=True, path_length=0, critical=True)
         ext = bc.to_asn1_ext()
         assert str(ext["extnID"]) == OID_BASIC_CONSTRAINTS
 

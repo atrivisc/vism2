@@ -124,7 +124,8 @@ def build_tbs_certificate(
     crt_extensions = rfc5280.Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 3))
 
     ### Subject Key Identifier ###
-    skid_extension = _build_subject_key_identifier_extension(der_encoder(csr_info.getComponentByName("subjectPKInfo")))
+    public_key_bytes = csr_info['subjectPKInfo']['subjectPublicKey'].asOctets()
+    skid_extension = _build_subject_key_identifier_extension(public_key_bytes)
     crt_extensions.append(skid_extension)
 
     ### Authority Key Identifier ###

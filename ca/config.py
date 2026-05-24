@@ -22,6 +22,7 @@ from pydantic.dataclasses import dataclass
 from ca.errors import CertConfigNotFound
 from vism_lib.config import VismConfig
 from pyasn1.codec.der.encoder import encode as der_encoder
+from cron_converter import Cron
 
 logger = logging.getLogger(__name__)
 ca_logger = logging.getLogger("vism_ca")
@@ -177,7 +178,6 @@ class X509ConfigKeyUsage(X509ConfigExtension):
             f"{int(self.decipher_only)}"
         )
 
-
 @dataclass
 class X509ConfigExtendedKeyUsage(X509ConfigExtension):
     OID: ClassVar[str] = x509.OID_EXTENDED_KEY_USAGE.dotted_string
@@ -206,9 +206,16 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
 
         return basic_constraints
 
+    @model_validator(mode='after')
+    def check_config(self):
+        if self.ca and not self.critical:
+            raise ValueError("BasicConstraints must be critical if CA is set to True")
+
+        return self
+
     @field_validator("path_length")
     @classmethod
-    def validate_algorithm(cls, v: int):
+    def validate_path_length(cls, v: int):
         if v < 0:
             raise ValueError(f"path_length must be greater than or equal to 0, got {v}")
 
@@ -384,8 +391,8 @@ class X509Config:
     leaf_authority_info_access: X509ConfigAuthorityInfoAccess = None
 
     @model_validator(mode='after')
-    def check_passwords_match(self):
-        if self.subject_name.is_empty() and not self.subject_alternative_name.critical:
+    def check_config(self):
+        if self.subject_name.is_empty() and (not self.subject_alternative_name or not self.subject_alternative_name.critical):
             raise ValueError("SAN must be critical if subject name is empty")
 
         if self.subject_name.is_empty() and self.basic_constraints.ca:
@@ -403,6 +410,7 @@ class CertificateConfig:
     externally_managed: bool = False
     certificate_pem: str = None
     crl_pem: str = None
+    crl_update_cron: str = "0 1 * * *"
 
     key: KeyConfig = None
     x509: X509Config = None
@@ -434,6 +442,12 @@ class CertificateConfig:
 
         return attributes
 
+    @model_validator(mode='after')
+    def check_config(self):
+        if self.crl_update_cron:
+            Cron(self.crl_update_cron)
+
+        return self
 
 @dataclass
 class CAConfig(VismConfig):

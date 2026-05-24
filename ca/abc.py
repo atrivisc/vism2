@@ -1,5 +1,6 @@
 import asyncio
-from typing import Protocol, Any, Callable, Awaitable, TypeVar
+from abc import ABCMeta
+from typing import Protocol, Any, Callable, Awaitable, TypeVar, ClassVar
 type AsyncCallable = Callable[[], Awaitable]
 
 class Key(Protocol):
@@ -38,23 +39,54 @@ class KeyManager(Protocol[PrivKeyT, PubKeyT]):
 
     def make_key_descriptors(self, cert_config: 'CertificateConfig') -> tuple[PubKeyT, PrivKeyT]: ...
 
-class Election(Protocol):
+class Election(metaclass=ABCMeta):
     shutdown_event: asyncio.Event
     is_leader: bool = False
     election_interval: int = 30
+    handlers: dict[str, list[AsyncCallable]] = None
 
-    async def follower_heartbeat(self):
-        """Function called for follower on each loop in election_loop"""
-        ...
+    EVENTS: ClassVar[list[str]] = [
+        "on_follower_heartbeat",
+        "on_leader_heartbeat",
+        "on_resign",
+        "on_leader_lost",
+        "on_elected",
+        "on_election_lost"
+    ]
 
-    async def leader_heartbeat(self):
-        """Function called for leader on each loop in election_loop"""
-        ...
+    def __init__(self):
+        if self.handlers is None:
+            self.handlers = {}
 
-    async def resign(self, resign_callback: AsyncCallable):
-        """Function called when leader resigns"""
-        ...
+    def register_handler(self, event: str, handler: AsyncCallable):
+        if event not in self.EVENTS:
+            raise ValueError(f"Event {event} is not supported by this election")
 
-    async def run(self, resign_callback: AsyncCallable, leader_callback: AsyncCallable, follower_callback: AsyncCallable):
+        self.handlers.setdefault(event, []).append(handler)
+
+    def unregister_handler(self, event: str, handler: AsyncCallable):
+        if event not in self.EVENTS:
+            raise ValueError(f"Event {event} is not supported by this election")
+
+        if event not in self.handlers:
+            return
+
+        self.handlers[event].remove(handler)
+
+    async def notify_handlers(self, events: list[str]):
+        for event in events:
+            await self.notify_handler(event)
+
+    async def notify_handler(self, event: str):
+        if event not in self.EVENTS:
+            raise ValueError(f"Event {event} is not supported by this election")
+
+        if event not in self.handlers:
+            return
+
+        for handler in self.handlers[event]:
+            await handler()
+
+    async def run(self):
         """Runs an infinite asyncio election loop"""
-        ...
+        raise NotImplementedError()
