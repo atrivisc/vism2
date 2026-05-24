@@ -1,7 +1,7 @@
 
 """Database models for ACME authorization entities."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from uuid import UUID
 
@@ -10,7 +10,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
-from vism_lib.database import Base
+from vism_lib.database import Base, TZDateTime
 from vism_lib.util import absolute_url
 from .order import OrderEntity
 from .error import ErrorEntity
@@ -44,7 +44,7 @@ class ChallengeStatus(str, Enum):
 
 
 def get_expiry_time():
-    return (datetime.now() + timedelta(hours=12)).isoformat()
+    return datetime.now(tz=timezone.utc) + timedelta(hours=12)
 
 class AuthzEntity(Base):
     """Database entity representing an ACME authorization."""
@@ -55,8 +55,8 @@ class AuthzEntity(Base):
     identifier_value: Mapped[str] = mapped_column(String(256))
     status: Mapped[AuthzStatus] = mapped_column(String(32))
     wildcard: Mapped[bool] = mapped_column(Boolean)
-    expires: Mapped[str] = mapped_column(
-        String(64),
+    expires: Mapped[datetime] = mapped_column(
+        TZDateTime,
         default_factory=get_expiry_time,
         init=False
     )
@@ -75,7 +75,7 @@ class AuthzEntity(Base):
         Uuid, ForeignKey('order.id'), init=False
     )
     order: Mapped[OrderEntity] = relationship(
-        "OrderEntity", lazy="joined"
+        "OrderEntity", lazy="selectin"
     )
 
     def to_dict(self):
@@ -85,9 +85,7 @@ class AuthzEntity(Base):
             "identifier_value": self.identifier_value,
             "status": self.status,
             "wildcard": self.wildcard,
-            "expires": self.expires,
-            "error_id": str(self.error_id),
-            "order_id": str(self.order_id),
+            "expires": self.expires.isoformat(),
         }
 
 
@@ -113,7 +111,6 @@ class ChallengeEntity(Base):
             "type": self.type,
             "key_authorization": self.key_authorization,
             "status": self.status,
-            "authz_id": str(self.authz_id),
         }
 
     def to_reply_dict(self, request=None):

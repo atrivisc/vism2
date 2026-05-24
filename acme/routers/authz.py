@@ -1,6 +1,6 @@
 """Router for ACME authorization operations."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks
 from starlette.responses import JSONResponse
 
@@ -49,10 +49,7 @@ class AuthzRouter:
 
         authz_expired = challenge_entity.authz.status == AuthzStatus.EXPIRED
         if not authz_expired:
-            authz_expired = (
-                datetime.fromisoformat(challenge_entity.authz.expires) <
-                datetime.now()
-            )
+            authz_expired = challenge_entity.authz.expires < datetime.now(tz=timezone.utc)
             if authz_expired:
                 challenge_entity.authz.status = AuthzStatus.EXPIRED
                 challenge_entity.authz = (
@@ -121,9 +118,7 @@ class AuthzRouter:
         if not authz_deactivated and not order_invalid:
             authz_expired = authz_entity.status == AuthzStatus.EXPIRED
             if not authz_expired:
-                authz_expired = (
-                    datetime.now() > datetime.fromisoformat(str(authz_entity.expires))
-                )
+                authz_expired = datetime.now(tz=timezone.utc) > authz_entity.expires
                 if authz_expired:
                     authz_entity.status = AuthzStatus.EXPIRED
                     authz_entity = self.controller.database.save_to_db(
@@ -132,10 +127,7 @@ class AuthzRouter:
 
             order_expired = authz_entity.order.status == OrderStatus.EXPIRED
             if not order_expired:
-                order_expiry = datetime.fromisoformat(
-                    authz_entity.order.expires
-                )
-                order_expired = datetime.now() > order_expiry
+                order_expired = datetime.now(tz=timezone.utc) > authz_entity.order.expires
                 if order_expired:
                     authz_entity.order.status = OrderStatus.EXPIRED
                     authz_entity.order = (
@@ -149,7 +141,7 @@ class AuthzRouter:
             response_code = 400
         response = {
             "status": authz_entity.status,
-            "expires": authz_entity.expires,
+            "expires": authz_entity.expires.isoformat(),
             "identifier": {
                 "type": authz_entity.identifier_type,
                 "value": authz_entity.identifier_value

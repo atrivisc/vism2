@@ -6,7 +6,28 @@ vism_acme:
   nonce_ttl_seconds: "300"
   retry_after_seconds: "5"
 
-  http-01:
+  rabbitmq:
+    leader_queue: "leader"
+
+    host: "127.0.0.1"
+    port: "5672"
+    user: "vism_acme"
+    password: "vism_acme"
+    vhost: "/"
+
+    csr_routing_key: "csr"
+    cert_routing_key: "cert"
+
+    csr_queue: "csr"
+    cert_queue: "cert"
+
+    csr_exchange: "csr"
+    cert_exchange: "cert"
+
+    max_retries: "5"
+    retry_delay_seconds: "60"
+
+  http01:
     port: 80
     follow_redirect: true
     timeout_seconds: 2
