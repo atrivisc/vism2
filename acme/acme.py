@@ -190,8 +190,7 @@ class VismACMEController(Controller):
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.args and len(record.args) >= 3 and record.args[2] not in ["/_/health", "/_/ready"]
-
+        return record.args and len(record.args) >= 3 and record.args[2] not in ["/health", "/ready"]
 
 def app() -> FastAPI:
     config = AcmeConfig.read_config()
