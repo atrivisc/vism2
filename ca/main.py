@@ -188,8 +188,10 @@ class VismCA(Controller):
                 db_entry = CertificateEntity(
                     name=cert_config.name,
                     externally_managed=cert_config.externally_managed,
-                    signer=issuer_db_entity
                 )
+
+            if issuer_db_entity is not None:
+                db_entry.signer_id = issuer_db_entity.id
 
             cert = self._build_certificate_manager(cert_config)
 

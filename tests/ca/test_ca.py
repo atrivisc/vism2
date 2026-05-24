@@ -231,7 +231,7 @@ class TestIssueCert:
         cfg = _cert_config(cn, _ca_x509(cn, path_length=2))
         ca, _, _ = _make_visma_ca(db, key_manager, cfg)
         mgr = ca._build_certificate_manager(cfg)
-        db_entry = CertificateEntity(name=cn, externally_managed=False, signer=None)
+        db_entry = CertificateEntity(name=cn, externally_managed=False)
         return ca, mgr, db_entry
 
     def test_populates_crt_der(self, db, key_manager):
@@ -296,7 +296,7 @@ class TestIssueCrl:
         cfg = _cert_config("root", _ca_x509("root", path_length=2))
         ca, _, _ = _make_visma_ca(db, key_manager, cfg)
         mgr = ca._build_certificate_manager(cfg)
-        db_entry = CertificateEntity(name="root", externally_managed=False, signer=None)
+        db_entry = CertificateEntity(name="root", externally_managed=False)
         ca._issue_cert(
             cert=mgr, issuer_cert=mgr,
             issuer_db_entity=db_entry, db_entry=db_entry,
@@ -335,7 +335,7 @@ class TestIssueCrl:
 class TestSaveCertificate:
     def test_uploads_crt_when_present(self, db, key_manager):
         ca, s3, _ = _make_visma_ca(db, key_manager, _cert_config("root"))
-        entity = CertificateEntity(name="root", externally_managed=False, signer=None)
+        entity = CertificateEntity(name="root", externally_managed=False)
         entity.crt_der = b"\xfake-cert"[:9]
         asyncio.run(ca.save_certificate("root", entity))
         assert "crt/root.crt" in s3.uploaded_keys()
@@ -343,20 +343,20 @@ class TestSaveCertificate:
 
     def test_uploads_crl_when_present(self, db, key_manager):
         ca, s3, _ = _make_visma_ca(db, key_manager, _cert_config("root"))
-        entity = CertificateEntity(name="root", externally_managed=False, signer=None)
+        entity = CertificateEntity(name="root", externally_managed=False)
         entity.crl_der = b"\xfake-crl"[:8]
         asyncio.run(ca.save_certificate("root", entity))
         assert "crl/root.crl" in s3.uploaded_keys()
 
     def test_no_upload_when_ders_absent(self, db, key_manager):
         ca, s3, _ = _make_visma_ca(db, key_manager, _cert_config("root"))
-        entity = CertificateEntity(name="root", externally_managed=False, signer=None)
+        entity = CertificateEntity(name="root", externally_managed=False)
         asyncio.run(ca.save_certificate("root", entity))
         assert s3.uploaded_keys() == []
 
     def test_persists_to_db(self, db, key_manager):
         ca, _, _ = _make_visma_ca(db, key_manager, _cert_config("root"))
-        entity = CertificateEntity(name="root", externally_managed=False, signer=None)
+        entity = CertificateEntity(name="root", externally_managed=False)
         asyncio.run(ca.save_certificate("root", entity))
         assert db.get_cert_by_name("root") is not None
 
@@ -367,7 +367,7 @@ class TestLoadCertificate:
         ca, _, _ = _make_visma_ca(db, key_manager, cfg)
         mgr = ca._build_certificate_manager(cfg)
         db_entry = CertificateEntity(
-            name=cfg.name, externally_managed=cfg.externally_managed, signer=None,
+            name=cfg.name, externally_managed=cfg.externally_managed,
         )
         return ca, mgr, db_entry
 
@@ -484,13 +484,14 @@ class TestLoadCertificate:
             ext_signing_key=ext_key,
         )
 
-        ext_db = CertificateEntity(name="ext-root", externally_managed=True, signer=None)
-        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer=ext_db)
+        ext_db = CertificateEntity(name="ext-root", externally_managed=True)
 
         asyncio.run(ca.load_certificate(
             cert=ext_mgr, db_entry=ext_db,
             issuer_cert=None, issuer_db_entity=None,
         ))
+
+        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer_id=ext_db.id)
         asyncio.run(ca.load_certificate(
             cert=sub_mgr, db_entry=sub_db,
             issuer_cert=ext_mgr, issuer_db_entity=ext_db,
@@ -522,13 +523,15 @@ class TestLoadCertificate:
         ext_mgr = ca._build_certificate_manager(ext_cfg)
         sub_mgr = ca._build_certificate_manager(sub_cfg)
 
-        ext_db = CertificateEntity(name="ext-root", externally_managed=True, signer=None)
-        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer=ext_db)
+        ext_db = CertificateEntity(name="ext-root", externally_managed=True)
 
         asyncio.run(ca.load_certificate(
             cert=ext_mgr, db_entry=ext_db,
             issuer_cert=None, issuer_db_entity=None,
         ))
+
+        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer_id=ext_db.id)
+
         with pytest.raises(VismException, match="needs to be manually signed"):
             asyncio.run(ca.load_certificate(
                 cert=sub_mgr, db_entry=sub_db,
@@ -556,14 +559,16 @@ class TestLoadCertificate:
             serialization.Encoding.DER
         )
 
-        ext_db = CertificateEntity(name="ext-root", externally_managed=True, signer=None)
-        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer=ext_db)
-        sub_db.crt_der = existing_der
+        ext_db = CertificateEntity(name="ext-root", externally_managed=True)
 
         asyncio.run(ca.load_certificate(
             cert=ext_mgr, db_entry=ext_db,
             issuer_cert=None, issuer_db_entity=None,
         ))
+        
+        sub_db = CertificateEntity(name="subordinate", externally_managed=False, signer_id=ext_db.id)
+        sub_db.crt_der = existing_der
+        
         asyncio.run(ca.load_certificate(
             cert=sub_mgr, db_entry=sub_db,
             issuer_cert=ext_mgr, issuer_db_entity=ext_db,
@@ -685,7 +690,7 @@ class TestHandleCsrFromAcme:
         asyncio.run(ca.handle_csr_from_acme(msg))
 
         chain = dx.sent[0].chain
-        assert chain.count("-----BEGIN CERTIFICATE-----") == 2
+        assert chain.count("-----BEGIN CERTIFICATE-----") == 3
 
     def test_unknown_ca_logs_and_returns_nothing(self, db, key_manager):
         ca, dx = self._setup_intermediate_ca(db, key_manager)
@@ -721,5 +726,5 @@ class TestHandleCsrFromAcme:
             pem = block + "\n-----END CERTIFICATE-----"
             certs.append(x509.load_pem_x509_certificate(pem.encode()))
 
-        leaf, intermediate = certs
+        leaf, intermediate, root = certs
         leaf.verify_directly_issued_by(intermediate)

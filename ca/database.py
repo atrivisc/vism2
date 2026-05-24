@@ -48,8 +48,7 @@ class CertificateEntity(Base):
     name: Mapped[str] = mapped_column(String(256))
     externally_managed: Mapped[bool] = mapped_column(Boolean)
 
-    signer_id: Mapped[Optional[UUID]] = mapped_column(Uuid, ForeignKey('certificate.id'), nullable=True, init=False)
-    signer: Mapped[Optional['CertificateEntity']] = relationship("CertificateEntity", lazy="joined")
+    signer_id: Mapped[Optional[UUID]] = mapped_column(Uuid, nullable=True, default=None)
 
     crl_number: Mapped[int] = mapped_column(Integer, default=1)
 
@@ -86,17 +85,27 @@ class VismCADatabase(VismDatabase):
 
             ders: list[bytes] = []
             while cert_entity is not None:
+                print(cert_entity.name)
                 if cert_entity.crt_der is None:
                     raise VismException(
                         f"Certificate {cert_entity.name} has no crt_der in the database."
                     )
                 ders.append(cert_entity.crt_der)
+                print("appended")
+                print(cert_entity.signer_id)
 
-                # This case technically isn't possible, but best to cover it
-                if cert_entity == cert_entity.signer:
+                if not cert_entity.signer_id:
                     break
 
-                cert_entity = cert_entity.signer
+                if cert_entity.id == cert_entity.signer_id:
+                    raise VismBreakingException(f"Certificate {cert_entity.name} has a signer {cert_entity.signer_id} that is itself.")
+
+                signer = session.query(CertificateEntity).filter(CertificateEntity.id == cert_entity.signer_id).first()
+                if not signer:
+                    raise VismBreakingException(f"Certificate {cert_entity.name} has a signer {cert_entity.signer_id} that is not in the database.")
+
+                cert_entity = signer
+
             return ders
 
     def get_issued_certificate_by_serial(self, serial: int | str) -> Optional[IssuedCertificate]:

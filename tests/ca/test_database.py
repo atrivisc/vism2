@@ -12,10 +12,11 @@ from vism_lib.errors import VismBreakingException, VismException
 
 
 def _root_cert(**overrides) -> CertificateEntity:
+    signer = overrides.pop("signer", None)
     return CertificateEntity(
         name=overrides.pop("name", "root"),
         externally_managed=overrides.pop("externally_managed", False),
-        signer=overrides.pop("signer", None),
+        signer_id=signer.id if signer else None,
         **overrides,
     )
 
@@ -147,12 +148,13 @@ class TestGetChainDers:
         saved_root = db.save_to_db(root)
 
         intermediate = CertificateEntity(
-            name="intermediate", externally_managed=False, signer=saved_root,
+            name="intermediate", externally_managed=False, signer_id=saved_root.id,
         )
         intermediate.crt_der = b"\xbb" * 4
         db.save_to_db(intermediate)
 
         chain = db.get_chain_ders("intermediate")
+
         assert chain == [b"\xbb" * 4, b"\xaa" * 4]
 
     def test_three_level_chain(self, db):
@@ -161,13 +163,13 @@ class TestGetChainDers:
         saved_root = db.save_to_db(root)
 
         intermediate = CertificateEntity(
-            name="intermediate", externally_managed=False, signer=saved_root,
+            name="intermediate", externally_managed=False, signer_id=saved_root.id,
         )
         intermediate.crt_der = b"\xbb" * 4
         saved_intermediate = db.save_to_db(intermediate)
 
         leaf = CertificateEntity(
-            name="leaf", externally_managed=False, signer=saved_intermediate,
+            name="leaf", externally_managed=False, signer_id=saved_intermediate.id,
         )
         leaf.crt_der = b"\xcc" * 4
         db.save_to_db(leaf)
@@ -191,12 +193,12 @@ class TestGetChainDers:
         saved_root = db.save_to_db(root)
 
         intermediate = CertificateEntity(
-            name="intermediate", externally_managed=False, signer=saved_root,
+            name="intermediate", externally_managed=False, signer_id=saved_root.id,
         )  # no crt_der
         saved_intermediate = db.save_to_db(intermediate)
 
         leaf = CertificateEntity(
-            name="leaf", externally_managed=False, signer=saved_intermediate,
+            name="leaf", externally_managed=False, signer_id=saved_intermediate.id,
         )
         leaf.crt_der = b"\xcc" * 4
         db.save_to_db(leaf)
