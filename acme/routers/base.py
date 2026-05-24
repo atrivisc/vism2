@@ -17,6 +17,18 @@ class BaseRouter:
         self.router.get("/directory")(self.directory)
         self.router.head("/new-nonce")(self._new_nonce)
         self.router.get("/new-nonce")(self._new_nonce)
+        self.router.get("/health")(self.health)
+        self.router.get("/ready")(self.ready)
+
+    async def ready(self):
+        if self.controller.ready:
+            return Response(status_code=200, content="OK")
+        else:
+            return Response(status_code=503, content="Service not ready")
+
+    @staticmethod
+    async def health():
+        return Response(status_code=200, content="OK")
 
     async def _new_nonce(self, request: AcmeRequest):
         """Return new nonce."""

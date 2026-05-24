@@ -1,6 +1,7 @@
 """VISM ACME Controller module for handling ACME protocol operations."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from cryptography import x509
@@ -35,6 +36,8 @@ class VismACMEController(Controller):
         self.setup_exception_handlers()
         self.setup_middleware()
         self.setup_routes()
+
+        self.ready = False
 
     async def _get_order_for_csr(self, order_id: str) -> OrderEntity:
         """Get and validate order for CSR processing."""
@@ -124,6 +127,7 @@ class VismACMEController(Controller):
         asyncio.create_task(
             self.data_exchange_module.receive_messages(DataExchangeCertMessage, self.handle_chain_from_ca)
         )
+        self.ready = True
         yield
         await asyncio.shield(self.data_exchange_module.cleanup(full=True))
 
@@ -184,6 +188,11 @@ class VismACMEController(Controller):
         self.api.include_router(authz_router.router)
         self.api.include_router(pub_router.router)
 
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.args and len(record.args) >= 3 and record.args[2] not in ["/_/health", "/_/ready"]
+
+
 def app() -> FastAPI:
     config = AcmeConfig.read_config()
     validation_module = DataValidation(validation_key=config.security.data_validation_key)
@@ -211,5 +220,7 @@ def app() -> FastAPI:
         database=database,
         data_exchange_module=data_exchange_module
     )
+
+    logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
     return controller.api
