@@ -6,7 +6,7 @@ from pyasn1_modules import rfc5280
 from sqlalchemy import String, Boolean, UUID, ForeignKey, Uuid, Integer, LargeBinary, DateTime
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column
-from vism_lib.database import Base, VismDatabase
+from vism_lib.database import Base, VismDatabase, TZDateTime
 from vism_lib.errors import VismBreakingException, VismException
 
 
@@ -19,14 +19,14 @@ class IssuedCertificate(Base):
     __tablename__ = 'issued_certificate'
 
     status_flag: Mapped[str] = mapped_column(String(8))
-    expiration_date: Mapped[datetime] = mapped_column(DateTime)
+    expiration_date: Mapped[datetime] = mapped_column(TZDateTime)
     serial: Mapped[bytes] = mapped_column(LargeBinary)
     subject: Mapped[bytes] = mapped_column(LargeBinary)
 
     ca_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey('certificate.id'), init=False)
     ca: Mapped['CertificateEntity'] = relationship("CertificateEntity", back_populates="issued_certificates", lazy="joined", default=None)
 
-    revocation_date: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    revocation_date: Mapped[datetime] = mapped_column(TZDateTime, nullable=True, default=None)
     revocation_reason: Mapped[str] = mapped_column(String(128), nullable=True, default=None)
 
     def to_dict(self):
@@ -91,6 +91,11 @@ class VismCADatabase(VismDatabase):
                         f"Certificate {cert_entity.name} has no crt_der in the database."
                     )
                 ders.append(cert_entity.crt_der)
+
+                # This case technically isn't possible, but best to cover it
+                if cert_entity == cert_entity.signer:
+                    break
+
                 cert_entity = cert_entity.signer
             return ders
 

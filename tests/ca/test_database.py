@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -23,7 +23,7 @@ def _root_cert(**overrides) -> CertificateEntity:
 def _issued_cert(ca: CertificateEntity, **overrides) -> IssuedCertificate:
     ic = IssuedCertificate(
         status_flag=overrides.pop("status_flag", "g"),
-        expiration_date=overrides.pop("expiration_date", datetime(2030, 1, 1)),
+        expiration_date=overrides.pop("expiration_date", datetime(2030, 1, 1, tzinfo=timezone.utc)),
         serial=overrides.pop("serial", b"\x02\x01\x01"),
         subject=overrides.pop("subject", b"\x30\x05"),
         ca=ca,
@@ -104,13 +104,13 @@ class TestIssuedCertificateToDict:
         ic = _issued_cert(
             root,
             status_flag="r",
-            revocation_date=datetime(2025, 6, 15, 12, 0),
+            revocation_date=datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc),
             revocation_reason="keyCompromise",
         )
         d = ic.to_dict()
         assert d["status_flag"] == "r"
         assert d["revocation_reason"] == "keyCompromise"
-        assert d["revocation_date"] == "2025-06-15 12:00:00"
+        assert d["revocation_date"] == "2025-06-15 12:00:00+00:00"
 
 
 class TestGetCertByName:
@@ -247,11 +247,11 @@ class TestGetRevokedCertificatesForIssuer:
         db.save_to_db(_issued_cert(root, status_flag="g", serial=_encoded_serial(1)))
         db.save_to_db(_issued_cert(
             root, status_flag="r", serial=_encoded_serial(2),
-            revocation_date=datetime(2025, 1, 1), revocation_reason="keyCompromise",
+            revocation_date=datetime(2025, 1, 1, tzinfo=timezone.utc), revocation_reason="keyCompromise",
         ))
         db.save_to_db(_issued_cert(
             root, status_flag="r", serial=_encoded_serial(3),
-            revocation_date=datetime(2025, 2, 1), revocation_reason="superseded",
+            revocation_date=datetime(2025, 2, 1, tzinfo=timezone.utc), revocation_reason="superseded",
         ))
 
         revoked = db.get_revoked_certificates_for_issuer(root.id)
@@ -272,11 +272,11 @@ class TestGetRevokedCertificatesForIssuer:
         root_b = db.save_to_db(_root_cert(name="root-b"))
         db.save_to_db(_issued_cert(
             root_a, status_flag="r", serial=_encoded_serial(1),
-            revocation_date=datetime(2025, 1, 1), revocation_reason="keyCompromise",
+            revocation_date=datetime(2025, 1, 1, tzinfo=timezone.utc), revocation_reason="keyCompromise",
         ))
         db.save_to_db(_issued_cert(
             root_b, status_flag="r", serial=_encoded_serial(2),
-            revocation_date=datetime(2025, 1, 1), revocation_reason="keyCompromise",
+            revocation_date=datetime(2025, 1, 1, tzinfo=timezone.utc), revocation_reason="keyCompromise",
         ))
 
         revoked_a = db.get_revoked_certificates_for_issuer(root_a.id)
@@ -294,7 +294,7 @@ class TestGetIssuedCertificates:
         db.save_to_db(_issued_cert(root, status_flag="g", serial=_encoded_serial(1)))
         db.save_to_db(_issued_cert(
             root, status_flag="r", serial=_encoded_serial(2),
-            revocation_date=datetime(2025, 1, 1), revocation_reason="superseded",
+            revocation_date=datetime(2025, 1, 1, tzinfo=timezone.utc), revocation_reason="superseded",
         ))
         result = db.get_issued_certificates(root.id)
         assert len(result) == 2

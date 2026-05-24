@@ -14,5 +14,6 @@ class RevokedCertificateEntry(univ.Sequence):
 class RevokedCertificates(univ.SequenceOf):
     componentType = RevokedCertificateEntry()
 
+# This is defined as SetOf deliberately, wrapping into SequenceOf is done in build.py
 class ExtensionsRequest(univ.SetOf):
     componentType = rfc5280.Extensions()

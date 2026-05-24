@@ -312,10 +312,6 @@ class TestCreateCsr:
         assert OID_KEY_USAGE in ext_oids
 
 
-# =========================================================================
-# sign_csr — self-signed root (signer=None, is_ca=True)
-# =========================================================================
-
 class TestSignCsrSelfSignedRoot:
 
     def test_returns_certificate(self, root_manager):
@@ -324,24 +320,17 @@ class TestSignCsrSelfSignedRoot:
         assert isinstance(crt, rfc5280.Certificate)
 
     def test_self_signed_signature_verifies(self, root_manager):
-        """A self-signed root verifies against itself per RFC 5280 §3.2."""
         csr = root_manager.create_csr()
         crt_asn1 = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         crt = _crypto_cert(crt_asn1)
-        # cryptography's API: verify_directly_issued_by accepts a parent
-        # cert; for self-signed, the parent is itself.
         crt.verify_directly_issued_by(crt)
 
     def test_root_has_no_aki(self, root_manager):
-        """RFC 5280 §4.2.1.1: self-signed certs MAY omit AKI."""
         csr = root_manager.create_csr()
         crt = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         assert _get_ext_in_tbs(crt["tbsCertificate"], OID_AUTHORITY_KEY_IDENTIFIER) is None
 
     def test_root_has_aia_from_csr(self, root_manager):
-        """For a self-signed root, AIA comes through the CSR (the root's
-        own config), not from sign_csr's explicit kwargs (which are
-        gated on is_ca=False)."""
         csr = root_manager.create_csr()
         crt = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         assert _get_ext_in_tbs(crt["tbsCertificate"], OID_AUTHORITY_INFO_ACCESS) is not None
@@ -379,10 +368,6 @@ class TestSignCsrSelfSignedRoot:
         crt = root_manager.sign_csr(signer=None, csr=csr, days=3650, is_ca=True)
         assert der_encoder(crt["signatureAlgorithm"]) == der_encoder(crt["tbsCertificate"]["signature"])
 
-
-# =========================================================================
-# sign_csr — intermediate signed by root (signer=root, is_ca=True)
-# =========================================================================
 
 class TestSignCsrIntermediate:
 
@@ -488,19 +473,6 @@ class TestSignCsrLeaf:
         crypto_crt = _crypto_cert(crt)
         bc = crypto_crt.extensions.get_extension_for_class(x509.BasicConstraints)
         assert bc.value.ca is False
-
-    def test_leaf_inherits_aia_from_intermediate_cert(self, intermediate_manager, leaf_key, chain):
-        """For leaf certs, build_tbs_certificate adds AIA from the issuer
-        cert. The leaf should end up with the intermediate's AIA URL —
-        which is what verifiers actually use to find the intermediate."""
-        csr = _make_external_leaf_csr(leaf_key, "leaf.example.com")
-        crt = intermediate_manager.sign_csr(
-            signer=chain["intermediate"], csr=csr, days=90, is_ca=False
-        )
-        crypto_crt = _crypto_cert(crt)
-        aia = crypto_crt.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
-        urls = {ad.access_location.value for ad in aia}
-        assert any("intermediate" in u for u in urls)
 
     def test_leaf_inherits_crldp_from_intermediate_cert(self, intermediate_manager, leaf_key, chain):
         csr = _make_external_leaf_csr(leaf_key, "leaf.example.com")

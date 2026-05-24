@@ -39,7 +39,7 @@ def get_extension_by_oid_from_certificate(cert: rfc5280.Certificate, oid: str) -
     )
 
 def generate_random_serial() -> int:
-    return secrets.randbits(159)
+    return secrets.randbelow(2**159 - 2**63) + 2**63
 
 def asn1_time_to_datetime(asn1_time: rfc5280.Time) -> datetime:
     chosen = asn1_time.getName()

@@ -122,6 +122,10 @@ class X509ConfigSubjectName:
             rdn = rfc5280.RelativeDistinguishedName()
             attr = rfc5280.AttributeTypeAndValue()
             attr.setComponentByName("type", univ.ObjectIdentifier(attribute_type.dotted_string))
+
+            # the choice to use UTF8String for each value is deliberate.
+            # https://datatracker.ietf.org/doc/html/rfc5280#section-7.1
+            # "Conforming implementations MUST support UTF8String and PrintableString."
             attr.setComponentByName("value", char.UTF8String(value))
             rdn.append(attr)
             rdn_seq.append(rdn)
@@ -189,12 +193,12 @@ class X509ConfigBasicConstraints(X509ConfigExtension):
     OID: ClassVar[str] = x509.OID_BASIC_CONSTRAINTS.dotted_string
 
     ca: bool = False
-    path_length: int = 0
+    path_length: int | None = None
 
     def to_asn1(self):
         basic_constraints = rfc5280.BasicConstraints()
         basic_constraints.setComponentByName("cA", self.ca)
-        if self.ca:
+        if self.ca and self.path_length is not None:
             basic_constraints.setComponentByName("pathLenConstraint", self.path_length)
 
         return basic_constraints
@@ -365,6 +369,8 @@ class X509Config:
     crl_distribution_points: X509ConfigCRLDistributionPoints = None
     extended_key_usage: X509ConfigExtendedKeyUsage = None
     subject_alternative_name: X509ConfigSubjectAlternativeName = None
+
+    leaf_authority_info_access: X509ConfigAuthorityInfoAccess = None
 
 
 @dataclass

@@ -484,9 +484,6 @@ class TestHsmBackedChainIssuance:
         leaf_crypto.verify_directly_issued_by(intermediate_crypto)
 
     def test_crl_verifies_against_hsm_signed_root(self, p11_client, requires_ec):
-        """CRL signing path uses the same signer pipeline; confirm it
-        produces a CRL whose signature verifies against the issuing
-        CA's HSM-backed key."""
         from pyasn1.codec.der.encoder import encode as der_encoder
 
         root_mgr = _make_manager_with_hsm(

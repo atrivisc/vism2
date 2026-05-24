@@ -1,7 +1,9 @@
 import hashlib
+import time
 from datetime import datetime, timezone, timedelta
 
 from cryptography import x509
+from cryptography.hazmat._oid import ExtensionOID
 from pyasn1.type import univ, tag
 from pyasn1_modules import rfc2985, rfc5280, rfc2986
 
@@ -85,16 +87,22 @@ def build_revoked_certificate_entry(
 
     return revoked_certificate_entry
 
+def _akid_ext_from_issuer(issuer: rfc5280.Certificate) -> rfc5280.Extension:
+    issuer_skid_ext = get_extension_by_oid_from_certificate(issuer, x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string)
+    if not issuer_skid_ext:
+        raise CryptoException(f"Issuer certificate does not contain subject key identifier extension.")
+
+    akid_key_identifier = der_decoder(issuer_skid_ext['extnValue'], asn1Spec=rfc5280.SubjectKeyIdentifier())[0].asOctets()
+    return _build_authority_key_identifier_extension(akid_key_identifier)
+
 def build_tbs_certificate(
         issuer_cert: rfc5280.Certificate | None,
         csr: rfc2986.CertificationRequest,
         days: int,
         signature_algorithm: rfc5280.AlgorithmIdentifier,
         *,
-        is_ca: bool,
         serial: int | None = None,
-        authority_info_access_ext: rfc5280.Extension | None = None,
-        crl_distribution_points_ext: rfc5280.Extension | None = None,
+        additional_extensions: list[rfc5280.Extension | None] | None = None,
         now: datetime | None = None,
 ) -> rfc5280.TBSCertificate:
     csr_info = csr.getComponentByName("certificationRequestInfo")
@@ -113,46 +121,43 @@ def build_tbs_certificate(
     validity["notAfter"] = get_ans1_time(not_after_time)
 
     ### Extensions ###
-    extensions = rfc5280.Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 3))
+    crt_extensions = rfc5280.Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 3))
 
     ### Subject Key Identifier ###
     skid_extension = _build_subject_key_identifier_extension(der_encoder(csr_info.getComponentByName("subjectPKInfo")))
-    extensions.append(skid_extension)
+    crt_extensions.append(skid_extension)
 
     ### Authority Key Identifier ###
     if issuer_cert:
-        issuer_skid_ext = get_extension_by_oid_from_certificate(issuer_cert, x509.OID_SUBJECT_KEY_IDENTIFIER.dotted_string)
-        if not issuer_skid_ext:
-            raise CryptoException(f"Issuer certificate does not contain subject key identifier extension.")
-
-        akid_key_identifier = der_decoder(issuer_skid_ext['extnValue'], asn1Spec=rfc5280.SubjectKeyIdentifier())[0].asOctets()
-        akid_ext = _build_authority_key_identifier_extension(akid_key_identifier)
-        extensions.append(akid_ext)
+        crt_extensions.append(_akid_ext_from_issuer(issuer_cert))
 
     ### Requested Extensions ###
+    csr_requested_extension_oids = []
+
     csr_attributes: rfc2986.Attributes = csr_info.getComponentByName("attributes")
     ext_req_attr = next(filter(lambda attr: attr['type'] == univ.ObjectIdentifier("1.2.840.113549.1.9.14"), csr_attributes), None)
     if ext_req_attr:
         requested_extensions = ext_req_attr['values']
         for ext_oct in requested_extensions:
             for ext in der_decoder(ext_oct, asn1Spec=rfc5280.Extensions())[0]:
-                extensions.append(ext)
+                csr_requested_extension_oids.append(str(ext['extnID']))
+                crt_extensions.append(ext)
 
-    ### Authority Information Access / CRL Distribution Points (leaf only) ###
-    if not is_ca:
-        if issuer_cert:
-            issuer_aia = get_extension_by_oid_from_certificate(issuer_cert, x509.OID_AUTHORITY_INFORMATION_ACCESS.dotted_string)
-            if issuer_aia:
-                authority_info_access_ext = issuer_aia
-        if authority_info_access_ext:
-            extensions.append(authority_info_access_ext)
+    # Attach crldp from issuer when present and not requested with CSR
+    crldp_ext = None
+    if issuer_cert and str(ExtensionOID.CRL_DISTRIBUTION_POINTS.dotted_string) not in csr_requested_extension_oids:
+        crldp_ext = get_extension_by_oid_from_certificate(issuer_cert, ExtensionOID.CRL_DISTRIBUTION_POINTS.dotted_string)
+        if crldp_ext:
+            crt_extensions.append(crldp_ext)
 
-        if issuer_cert:
-            issuer_crldp = get_extension_by_oid_from_certificate(issuer_cert, x509.OID_CRL_DISTRIBUTION_POINTS.dotted_string)
-            if issuer_crldp:
-                crl_distribution_points_ext = issuer_crldp
-        if crl_distribution_points_ext:
-            extensions.append(crl_distribution_points_ext)
+    for extension in (additional_extensions or []):
+        if extension is None or str(extension['extnID']) in csr_requested_extension_oids:
+            continue
+
+        if str(extension['extnID']) == ExtensionOID.CRL_DISTRIBUTION_POINTS.dotted_string and crldp_ext is not None:
+            continue
+
+        crt_extensions.append(extension)
 
     if serial is None:
         serial = generate_random_serial()
@@ -164,7 +169,7 @@ def build_tbs_certificate(
     tbs_cert["validity"] = validity
     tbs_cert["subject"] = csr_info["subject"]
     tbs_cert["subjectPublicKeyInfo"] = csr_info["subjectPKInfo"]
-    tbs_cert["extensions"] = extensions
+    tbs_cert["extensions"] = crt_extensions
 
     return tbs_cert
 
@@ -174,7 +179,9 @@ def build_tbs_cert_list(
         signature_algorithm: rfc5280.AlgorithmIdentifier,
         revoked_certificate_entries: list[RevokedCertificateEntry],
         *,
-        now: datetime | None = None
+        crl_number: int | None = None,
+        now: datetime | None = None,
+        aia_ext: rfc5280.Extension | None = None,
 ) -> rfc5280.TBSCertList:
     now = now or datetime.now(timezone.utc)
 
@@ -183,15 +190,34 @@ def build_tbs_cert_list(
     signature_algorithm = signature_algorithm
     revoked_certificates = RevokedCertificates()
 
+    if crl_number is None:
+        # CRL number needs to be monotonically increasing
+        crl_number = time.time()
+
     for revoked_cert in revoked_certificate_entries:
         revoked_certificates.append(revoked_cert)
 
+    crl_extensions = rfc5280.Extensions().subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
+
+    if aia_ext:
+        crl_extensions.append(aia_ext)
+
+    ### Akid ###
+    crl_extensions.append(_akid_ext_from_issuer(issuer_cert))
+
+    ### CRL Number ###
+    crl_number_ext = rfc5280.Extension()
+    crl_number_ext['extnID'] = ExtensionOID.CRL_NUMBER.dotted_string
+    crl_number_ext['critical'] = False
+    crl_number_ext['extnValue'] = der_encoder(rfc5280.CRLNumber(crl_number))
+    crl_extensions.append(crl_number_ext)
+
     tbs_crl['version'] = CRL_VERSION
     tbs_crl["signature"] = signature_algorithm
-
     tbs_crl["issuer"] = issuer_cert["tbsCertificate"]["subject"]
     tbs_crl["thisUpdate"] = get_ans1_time(now - timedelta(hours=1))
     tbs_crl["nextUpdate"] = get_ans1_time(now + timedelta(days=days))
     tbs_crl["revokedCertificates"] = revoked_certificates
+    tbs_crl['crlExtensions'] = crl_extensions
 
     return tbs_crl

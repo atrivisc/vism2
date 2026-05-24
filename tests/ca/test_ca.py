@@ -140,7 +140,7 @@ class TestRevokeCertificate:
         root_entity = db.get_cert_by_name("root")
         ic = IssuedCertificate(
             status_flag="g",
-            expiration_date=datetime(2030, 1, 1),
+            expiration_date=datetime(2030, 1, 1, tzinfo=timezone.utc),
             serial=der_encoder(rfc5280.CertificateSerialNumber(42)),
             subject=b"\x30\x05",
             ca=root_entity,
@@ -415,6 +415,7 @@ class TestLoadCertificate:
             .not_valid_before(datetime(2024, 1, 1))
             .not_valid_after(datetime(2034, 1, 1))
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(ec_key.public_key()), critical=False)
             .sign(ec_key, hashes.SHA384())
         )
         cert_pem = cert.public_bytes(_serial.Encoding.PEM).decode()
@@ -448,6 +449,8 @@ class TestLoadCertificate:
                 key_encipherment=False, data_encipherment=False, key_agreement=False,
                 key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False,
             ), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(sub_pubkey), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ext_signing_key.public_key()), critical=False)
             .sign(ext_signing_key, hashes.SHA384())
         )
         return cert.public_bytes(_serial.Encoding.PEM).decode()

@@ -16,7 +16,7 @@ from ca.config import CertificateConfig
 from ca.crypto.build import build_certification_request_info, build_revoked_certificate_entry, build_tbs_cert_list, build_tbs_certificate
 from ca.crypto.util import get_ans1_time, get_algorithm_identifier
 from ca.database import IssuedCertificate
-from vism_lib.errors import VismBreakingException
+from vism_lib.errors import VismBreakingException, VismException
 
 _revocation_reason_map = {
     "unspecified": rfc5280.CRLReason("unspecified"),
@@ -111,11 +111,11 @@ class CertificateManager:
             *,
             now: datetime | None = None
     ) -> rfc5280.Certificate:
-        # build_tbs_certificate reads requested extensions by treating
-        # the CSR's AttributeValues as DER bytes (Any), which only works
-        # if the CSR has been through DER decoding. Round-trip here so
-        # callers don't need to think about CSR provenance.
         csr = der_decoder(der_encoder(csr), asn1Spec=rfc2986.CertificationRequest())[0]
+
+        _loaded_csr = x509.load_der_x509_csr(der_encoder(csr))
+        if not _loaded_csr.is_signature_valid:
+            raise VismException(f"CSR {csr.subject} has invalid signature")
 
         if signer is not None:
             signer_spki_der = der_encoder(signer['tbsCertificate']['subjectPublicKeyInfo'])
@@ -123,16 +123,21 @@ class CertificateManager:
         else:
             signer_public_key = self.public_key
 
+        additional_extensions = []
+        if not is_ca and self.config.x509.leaf_authority_info_access:
+            authority_info_access_ext = self.config.x509.leaf_authority_info_access.to_asn1_ext()
+            additional_extensions.append(authority_info_access_ext)
+
+        if not is_ca and self.config.x509.crl_distribution_points:
+            crl_distribution_points_ext = self.config.x509.crl_distribution_points.to_asn1_ext()
+            additional_extensions.append(crl_distribution_points_ext)
+
         tbs_cert = build_tbs_certificate(
             issuer_cert=signer,
             csr=csr,
             days=days,
-            signature_algorithm=get_algorithm_identifier(signer_public_key, self.CSR_SIGN_HASH_ALG),
-            is_ca=is_ca,
-            authority_info_access_ext=self.config.x509.authority_info_access.to_asn1_ext()
-                if not is_ca and self.config.x509.authority_info_access else None,
-            crl_distribution_points_ext=self.config.x509.crl_distribution_points.to_asn1_ext()
-                if not is_ca and self.config.x509.crl_distribution_points else None,
+            signature_algorithm=get_algorithm_identifier(signer_public_key, self.CRT_SIGN_HASH_ALG),
+            additional_extensions=additional_extensions,
             now=now
         )
 
@@ -157,7 +162,7 @@ class CertificateManager:
     def load_external_crl_der(self) -> bytes:
         return x509.load_pem_x509_crl(self.config.crl_pem.encode("utf-8")).public_bytes(encoding=serialization.Encoding.DER)
 
-    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate], *, now: datetime | None = None) -> CertificateList:
+    def create_crl(self, signer: rfc5280.Certificate, revoked_certs: list[IssuedCertificate], *, crl_number: int | None = None, now: datetime | None = None) -> CertificateList:
         revoked_cert_entries = [
             build_revoked_certificate_entry(
                 serial=der_decoder(issued_cert.serial, asn1Spec=rfc2315.SerialNumber())[0],
@@ -170,10 +175,16 @@ class CertificateManager:
         signer_spki_der = der_encoder(signer['tbsCertificate']['subjectPublicKeyInfo'])
         signer_public_key = serialization.load_der_public_key(signer_spki_der)
 
+        leaf_aia_ext = None
+        if self.config.x509.leaf_authority_info_access:
+            leaf_aia_ext = self.config.x509.leaf_authority_info_access.to_asn1_ext()
+
         tbs_crl = build_tbs_cert_list(
             issuer_cert=signer,
             days=self.config.x509.crl_days,
             signature_algorithm=get_algorithm_identifier(signer_public_key, self.CRL_SIGN_HASH_ALG),
+            aia_ext=leaf_aia_ext,
+            crl_number=crl_number,
             revoked_certificate_entries=revoked_cert_entries,
             now=now
         )
