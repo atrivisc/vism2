@@ -11,7 +11,7 @@ cachetools==7.1.4
 aiohttp==3.13.5
 uvicorn==0.47.0
 aiormq==6.9.4
-vism-lib==0.3.3
+vism-lib==0.3.4
 psycopg2-binary==2.9.12
 yaml-pydantic-dataclass==0.1.4
 python-pkcs11==0.9.4

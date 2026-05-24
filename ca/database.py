@@ -74,7 +74,6 @@ class CertificateEntity(Base):
             "crl_der": self.crl_der.hex() if self.crl_der else None,
         }
 
-
 class VismCADatabase(VismDatabase):
     """Database interface for Vism CA operations."""
 
