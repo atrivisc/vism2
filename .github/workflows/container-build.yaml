@@ -14,20 +14,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          enable-cache: true
 
       - name: Install required packages
         run: sudo apt-get install -y softhsm2
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync
+
+      - name: Install pytest
+        run: uv install pytest
 
       - name: Run CA tests
-        run: pytest -m ""
+        run: uv run pytest -m ""
 
   build-and-push:
     runs-on: ubuntu-latest
