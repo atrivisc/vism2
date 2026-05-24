@@ -84,7 +84,6 @@ class OrderEntity(Base):
             "status": self.status,
             "not_before": self.not_before,
             "not_after": self.not_after,
-            "expires": self.expires.isoformat(),
             "csr_pem": self.csr_pem,
             "crt_pem": self.crt_pem,
         }

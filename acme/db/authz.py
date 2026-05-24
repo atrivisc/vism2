@@ -85,7 +85,6 @@ class AuthzEntity(Base):
             "identifier_value": self.identifier_value,
             "status": self.status,
             "wildcard": self.wildcard,
-            "expires": self.expires.isoformat(),
         }
 
 
