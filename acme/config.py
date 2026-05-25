@@ -205,7 +205,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
             self,
             client_ip: str,
             domain: str
-    ) -> None:
+    ) -> bool:
         """Validate that a client has authority over a domain."""
         try:
             domain_ips = {
@@ -230,6 +230,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                 title="Domain exists but has no IPs",
             )
 
+        client_pre_validated = self._client_is_valid(client_ip, domain)
         client_allowed = self._client_is_allowed(client_ip, domain)
         client_in_cluster = self._client_in_cluster(client_ip)
 
@@ -250,6 +251,8 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                     f"'{self.cluster}'"
                 ),
             )
+
+        return client_pre_validated
 
     def to_dict(self):
         """Convert profile to dictionary."""

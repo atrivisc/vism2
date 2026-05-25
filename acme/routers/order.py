@@ -205,9 +205,10 @@ class OrderRouter:
 
         errors = []
         client_ip = get_client_ip(request)
+        pre_validated = False
         for identifier in request.state.jws_envelope.payload.identifiers:
             try:
-                await profile.validate_client(client_ip, identifier.value)
+                pre_validated = await profile.validate_client(client_ip, identifier.value)
             except ACMEProblemResponse as exc:
                 errors.append(exc)
 
@@ -220,7 +221,7 @@ class OrderRouter:
 
         order = OrderEntity(
             account=request.state.account,
-            status="pending",
+            status=OrderStatus.PENDING,
             profile_name=profile.name,
             not_before=request.state.jws_envelope.payload.not_before,
             not_after=request.state.jws_envelope.payload.not_after
@@ -230,10 +231,11 @@ class OrderRouter:
 
         authz_entities = []
         for identifier in request.state.jws_envelope.payload.identifiers:
+            authz_status = AuthzStatus.PENDING if not pre_validated else AuthzStatus.VALID
             authz_entity = AuthzEntity(
                 identifier_type=identifier.type,
                 identifier_value=identifier.value,
-                status=AuthzStatus.PENDING,
+                status=authz_status,
                 wildcard=False,
                 order=order,
             )
@@ -245,9 +247,10 @@ class OrderRouter:
                 key_authorization = (
                     token + "." + request.state.account.jwk.thumbprint()
                 )
+                challenge_status = ChallengeStatus.PENDING if not pre_validated else ChallengeStatus.VALID
                 challenge = ChallengeEntity(
                     type=challenge_type,
-                    status=ChallengeStatus.PENDING,
+                    status=challenge_status,
                     key_authorization=key_authorization,
                     authz=authz_entity,
                 )
