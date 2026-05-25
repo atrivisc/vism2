@@ -442,8 +442,6 @@ class AcmeConfig(VismConfig):
     def get_profile_by_name(self, name: str) -> Optional[Profile]:
         """Get profile by name, or return default if name is empty."""
         acme_logger.debug("Getting profile '%s'", name)
-        if not name:
-            return self.default_profile
 
         profiles = list(filter(lambda p: p.name == name, self.profiles))
         if len(profiles) == 0:

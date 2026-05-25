@@ -227,6 +227,8 @@ class OrderRouter:
             not_after=request.state.jws_envelope.payload.not_after
         )
 
+        acme_logger.debug("Order created: %s", order)
+
         order = self.controller.database.save_to_db(order)
 
         authz_entities = []
