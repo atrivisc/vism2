@@ -44,12 +44,6 @@ class BaseRouter:
             "newAccount": absolute_url(request, "/new-account"),
             "newOrder": absolute_url(request, "/new-order"),
             "revokeCert": absolute_url(request, "/revoke-cert"),
-            "keyChange": None,
-            "meta": {
-                "profiles": {
-                    profile.name: profile.to_dict()
-                    for profile in self.controller.config.profiles
-                }
-            }
+            "keyChange": None
         }
         return JSONResponse(dir_obj)
