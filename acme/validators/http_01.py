@@ -109,6 +109,10 @@ class Http01Validator:
                         self.challenge.authz
                     )
 
+                    acme_logger.info(
+                        "Sucessfully validated challenge %s with HTTP-01.", self.challenge.id
+                    )
+
             except asyncio.TimeoutError as exc:
                 error = "connection"
                 error_detail = (
