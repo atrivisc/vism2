@@ -21,6 +21,7 @@ class AuthzRouter:
         self.router = APIRouter()
         self.router.post("/authz/{authz_id}")(self.authz)
         self.router.post("/challenge/{challenge_id}")(self.challenge)
+        self.router.get("/challenge/{challenge_id}")(self.challenge)
 
     async def challenge(
             self,
