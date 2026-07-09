@@ -140,12 +140,22 @@ class OrderRouter:
         """Get the status of an order."""
         acme_logger.info("Received request to get order %s.", order_id)
         order = await self._validate_order_request(order_id, request)
-
-        authz_entities = self.controller.database.get_authz_by_order_id(
-            order_id
+        order_authz_entities = (
+            self.controller.database.get_authz_by_order_id(order_id)
         )
+        
+        if order.status != "ready":
+            order_ready = all(
+                authz.status == AuthzStatus.VALID
+                for authz in order_authz_entities
+            )
+            if order_ready:
+                acme_logger.info("Order %s is ready.", order_id)
+                order.status = "ready"
+                order = self.controller.database.save_to_db(order)
+        
         return await self._order_json_response(
-            order, authz_entities, request, 200
+            order, order_authz_entities, request, 200
         )
 
     async def _validate_order_request(
