@@ -78,7 +78,8 @@ class AccountRouter:
     async def new_account(self, request: AcmeRequest):
         """Create a new ACME account or return existing one."""
 
-        if request.state.account is None and request.state.jws_envelope.payload.only_return_existing:
+        payload = request.state.jws_envelope.payload
+        if request.state.account is None and (payload and payload.only_return_existing):
             raise ACMEProblemResponse(
                 error_type="accountDoesNotExist",
                 title="Provided JWK is not linked to an account."
@@ -95,10 +96,8 @@ class AccountRouter:
                 status=status,
                 _jwk=jwk,
             )
-            if request.state.jws_envelope.payload.contact:
-                account.contact = ','.join(
-                    request.state.jws_envelope.payload.contact
-                )
+            if payload.contact:
+                account.contact = ','.join(payload.contact)
 
             self.controller.database.save_to_db(account)
             return_code = 201

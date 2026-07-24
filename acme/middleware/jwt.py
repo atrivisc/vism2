@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Callable
 from fastapi import Request
 from jwcrypto import jws as _jws
+from pydantic import ValidationError
 from pydantic.dataclasses import dataclass
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -213,6 +214,15 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
                 encoded_payload=envelope_json.get("payload", None),
                 encoded_signature=envelope_json.get("signature", None),
             )
+        except ValidationError as exc:
+            if isinstance(exc.__cause__, ACMEProblemResponse):
+                raise exc.__cause__
+            else:
+                raise ACMEProblemResponse(
+                    error_type="malformed",
+                    title="Invalid JSON body",
+                    detail=str(exc)
+                ) from exc
         except Exception as exc:
             raise ACMEProblemResponse(
                 error_type="malformed",

@@ -86,6 +86,9 @@ class AcmeIdentifier:
                 )
 
     def __eq__(self, other: str | Self):
+        if not isinstance(other, AcmeIdentifier) and not isinstance(other, str):
+            return NotImplemented
+
         if isinstance(other, str):
             return self.value == other
 

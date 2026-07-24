@@ -143,7 +143,7 @@ class VismACMEController(Controller):
         """Configure middleware for the FastAPI application."""
         self.api.add_middleware(
             AcmeAccountMiddleware,
-            jwK_or_kid_paths=[r"/revoke-cert(.*?)"],
+            jwk_or_kid_paths=[r"/revoke-cert(.*?)"],
             jwk_paths=[r"/new-account/?"],
             kid_paths=[
                 r"/account(.*?)", r"/new-order/?", r"/authz(.*?)", r"/order(.*?)",
