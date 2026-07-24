@@ -125,7 +125,7 @@ class VismACMEController(Controller):
         self.database.save_to_db(order)
 
         # Before we exit, run nonce cleanup
-        self.database.nonce_cleanup()
+        self.database.nonce_cleanup(self.config.nonce_ttl_seconds)
 
         return None
 

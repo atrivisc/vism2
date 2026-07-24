@@ -10,10 +10,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from acme.errors import ACMEProblemResponse
-from vism_lib.util import b64u_decode
+from vism_lib.util import b64u_decode, absolute_url
 from acme.middleware import AcmeProtectedPayload, AcmeProtectedHeader
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_SIGNATURE_ALGS = [
+    "RS256", "RS384", "RS512",
+    "ES256", "ES384", "ES512",
+]
 
 
 @dataclass
@@ -49,13 +54,30 @@ class AcmeJWSEnvelope:
         if not self.headers:
             return
 
+        if not self.headers.alg or \
+                self.headers.alg not in ALLOWED_SIGNATURE_ALGS:
+            problem = ACMEProblemResponse(
+                error_type="badSignatureAlgorithm",
+                title="Unsupported JWS signature algorithm.",
+                detail=(
+                    f"JWS \"alg\" must be one of "
+                    f"{', '.join(ALLOWED_SIGNATURE_ALGS)}. \"none\" and "
+                    f"MAC-based algorithms are not allowed."
+                )
+            )
+            problem.error_json["algorithms"] = ALLOWED_SIGNATURE_ALGS
+            raise problem
+
         if (self.headers.jwk and
                 self.headers.jwk.get('kty', None) not in
-                ['RSA', 'EC', 'oct']):
+                ['RSA', 'EC']):
             raise ACMEProblemResponse(
-                error_type="badSignatureAlgorithm",
-                title="Invalid JWK signature algorithm.",
-                detail="JWK signature algorithm must be one of RSA, EC, oct."
+                error_type="badPublicKey",
+                title="Invalid JWK key type.",
+                detail=(
+                    "Account keys must be asymmetric: JWK \"kty\" must "
+                    "be RSA or EC."
+                )
             )
 
         if self.headers.kid and self.headers.jwk:
@@ -67,20 +89,35 @@ class AcmeJWSEnvelope:
         if not self.headers.jwk:
             return
 
+        self.verify_signature(
+            self.headers.jwk,
+            error_type="badPublicKey",
+            title="Invalid JWK."
+        )
+
+    def verify_signature(
+            self,
+            key,
+            error_type: str = "malformed",
+            title: str = "JWS signature verification failed.",
+            status_code: int = 400,
+    ) -> None:
         try:
             compact = ".".join([
-                self.encoded_protected,
-                self.encoded_payload,
-                self.encoded_signature
+                self.encoded_protected or "",
+                self.encoded_payload or "",
+                self.encoded_signature or ""
             ])
             j = _jws.JWS()
             j.deserialize(compact)
-            j.verify(self.headers.jwk)
+            j.allowed_algs = ALLOWED_SIGNATURE_ALGS
+            j.verify(key)
         except Exception as exc:
             raise ACMEProblemResponse(
-                error_type="badPublicKey",
-                title="Invalid JWK.",
-                detail=str(exc)
+                error_type=error_type,
+                title=title,
+                detail=str(exc),
+                status_code=status_code
             ) from exc
 
 
@@ -112,12 +149,41 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
 
         try:
             jws_envelope = await self._parse_jws_envelope(request)
+            self._validate_url_header(request, jws_envelope)
         except ACMEProblemResponse as exc:
             return await exc.to_json_response(self.controller)
 
         request.state.jws_envelope = jws_envelope
 
         return await call_next(request)
+
+    @staticmethod
+    def _validate_url_header(
+            request: Request,
+            jws_envelope: "AcmeJWSEnvelope"
+    ) -> None:
+        if not jws_envelope.headers or not jws_envelope.headers.url:
+            raise ACMEProblemResponse(
+                error_type="unauthorized",
+                title="JWS protected header must include a \"url\" field.",
+                status_code=403
+            )
+
+        path = request.url.path
+        if request.url.query:
+            path = f"{path}?{request.url.query}"
+        expected_url = absolute_url(request, path)
+
+        if jws_envelope.headers.url != expected_url:
+            raise ACMEProblemResponse(
+                error_type="unauthorized",
+                title="JWS \"url\" header does not match the request URL.",
+                detail=(
+                    f"JWS url header is \"{jws_envelope.headers.url}\" "
+                    f"but the request was sent to \"{expected_url}\"."
+                ),
+                status_code=403
+            )
 
     @staticmethod
     async def _parse_jws_envelope(request: Request) -> AcmeJWSEnvelope:

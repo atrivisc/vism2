@@ -21,12 +21,25 @@ from acme.config import acme_logger
 class VismAcmeDatabase(VismDatabase):
     """Database interface for VISM ACME operations."""
 
+    def get_jwk_by_kid(self, kid: str) -> Optional[JWKEntity]:
+        """Retrieve JWK entity by its key ID (kid)."""
+        with self._get_session() as session:
+            account = self.get_account_by_kid(kid)
+            if not account:
+                return None
+
+            return session.query(JWKEntity).filter(JWKEntity.id == account.jwk_id).one_or_none()
+
     def delete(self, obj_type: Type[Base], *criterion: ColumnExpressionArgument[bool]):
         with self._get_session() as session:
             session.query(obj_type).filter(*criterion).delete()
 
-    def nonce_cleanup(self):
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    DEFAULT_NONCE_TTL_SECONDS = 300
+
+    def nonce_cleanup(self, ttl_seconds: int | None = None):
+        """Delete expired nonces (best-effort background hygiene)."""
+        ttl = ttl_seconds or self.DEFAULT_NONCE_TTL_SECONDS
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl)
         try:
             self.delete(NonceEntity, NonceEntity.created_at < cutoff)
         except Exception as e:
@@ -41,16 +54,31 @@ class VismAcmeDatabase(VismDatabase):
 
         return self.save_to_db(nonce_entity)
 
-    def pop_nonce(self, nonce: str, account: AccountEntity | None) -> NonceEntity | None:
-        nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce)
-
-        if account and nonce_entity and nonce_entity.account is not None and nonce_entity.account.id != account.id:
+    def pop_nonce(
+            self,
+            nonce: str,
+            account: AccountEntity | None,
+            ttl_seconds: int | None = None,
+    ) -> NonceEntity | None:
+        """Consume a nonce, returning it only if it is valid."""
+        if not nonce:
             return None
 
+        nonce_entity = self.get(NonceEntity, NonceEntity.nonce == nonce)
         if not nonce_entity:
             return None
 
         self.delete(NonceEntity, NonceEntity.id == nonce_entity.id)
+
+        ttl = ttl_seconds or self.DEFAULT_NONCE_TTL_SECONDS
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl)
+        if nonce_entity.created_at < cutoff:
+            return None
+
+        if nonce_entity.account is not None:
+            if account is None or nonce_entity.account.id != account.id:
+                return None
+
         return nonce_entity
 
     def get_orders_by_account_kid(

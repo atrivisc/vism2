@@ -33,9 +33,15 @@ class BaseRouter:
     async def _new_nonce(self, request: AcmeRequest):
         """Return new nonce."""
         acme_logger.info("Received request to create new nonce.")
-        account = getattr(request.state, "account", None)
-        nonce = self.controller.database.new_nonce(account).nonce
-        return Response(status_code=200, headers={"Replay-Nonce": nonce})
+        nonce = self.controller.database.new_nonce().nonce
+        status_code = 200 if request.method == "HEAD" else 204
+        return Response(
+            status_code=status_code,
+            headers={
+                "Replay-Nonce": nonce,
+                "Cache-Control": "no-store",
+            }
+        )
 
     async def directory(self, request: AcmeRequest):
         """Return the ACME directory with service endpoints and metadata."""

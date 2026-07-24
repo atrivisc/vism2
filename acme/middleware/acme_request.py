@@ -215,12 +215,17 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
 
         try:
             account = await self._get_account(request)
+            self._verify_signature(request, account)
         except ACMEProblemResponse as exc:
             return await exc.to_json_response(self.controller)
 
         nonce_provided = request.state.jws_envelope.headers.nonce
-        popped_nonce = self.controller.database.pop_nonce(nonce_provided, account)
-        if not nonce_provided or not popped_nonce:
+        popped_nonce = self.controller.database.pop_nonce(
+            nonce_provided,
+            account,
+            ttl_seconds=self.controller.config.nonce_ttl_seconds
+        )
+        if not popped_nonce:
             return JSONResponse(
                 status_code=400,
                 content={
@@ -236,10 +241,33 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
                 }
             )
 
-        request.state.nonce = nonce_provided or popped_nonce
+        request.state.nonce = popped_nonce.nonce
         request.state.account = account
 
         return await call_next(request)
+
+    @staticmethod
+    def _verify_signature(request, account: AccountEntity) -> None:
+        jws_envelope = request.state.jws_envelope
+
+        if not jws_envelope.headers.kid:
+            return
+
+        if not account:
+            raise ACMEProblemResponse(
+                error_type="accountDoesNotExist",
+                title="Account does not exist.",
+                status_code=403
+            )
+
+        jws_envelope.verify_signature(
+            account.jwk,
+            error_type="unauthorized",
+            title="JWS signature verification failed.",
+            status_code=403
+        )
+
+
 
     async def _get_account(self, request) -> AccountEntity:
         """Get account from request JWS envelope."""
