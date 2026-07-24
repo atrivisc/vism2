@@ -182,17 +182,17 @@ class OrderRouter:
                 status_code=403
             )
 
-        if order.status == OrderStatus.EXPIRED:
-            raise ACMEProblemResponse(
-                error_type="orderNotReady",
-                title="Order has expired.",
-            )
-
         # Check if the order has expired
         order_expired = datetime.now(tz=timezone.utc) > order.expires
         if order_expired:
             order.status = OrderStatus.EXPIRED
             order = self.controller.database.save_to_db(order)
+
+        if order.status == OrderStatus.EXPIRED:
+            raise ACMEProblemResponse(
+                error_type="orderNotReady",
+                title="Order has expired.",
+            )
 
         # Check if the order should be promoted to ready
         # This isn't exactly needed but a good failsafe if a validator fails to mark an order as ready
@@ -256,6 +256,8 @@ class OrderRouter:
                         detail="X-Forwarded-For contains invalid IP.",
                         status_code=400
                     )
+                else:
+                    return forwarded_ip
 
 
         return request.client.host

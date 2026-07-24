@@ -5,7 +5,6 @@ import logging
 from typing import Optional, Callable
 from fastapi import Request
 from jwcrypto import jws as _jws
-from pydantic import ValidationError
 from pydantic.dataclasses import dataclass
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
