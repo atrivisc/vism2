@@ -96,7 +96,7 @@ class AccountRouter:
                 status=status,
                 _jwk=jwk,
             )
-            if payload.contact:
+            if payload and payload.contact:
                 account.contact = ','.join(payload.contact)
 
             self.controller.database.save_to_db(account)

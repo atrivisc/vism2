@@ -1,6 +1,7 @@
 """Configuration module for VISM ACME server."""
 
 import base64
+import ipaddress
 import os
 import socket
 import logging
@@ -317,8 +318,8 @@ class Profile:  # pylint: disable=too-many-instance-attributes
 
     def _client_in_allowlist(self, client_ip: str, allowlist: list[str]) -> bool:
         client_hostnames = self._resolve_client_hostnames(client_ip)
-        subnets = [subnet for subnet in allowlist if is_valid_subnet(subnet)]
-        client_ip_in_subnets = any(client_ip in subnet for subnet in subnets)
+        subnets = [ipaddress.ip_network(subnet) for subnet in allowlist if is_valid_subnet(subnet)]
+        client_ip_in_subnets = any(ipaddress.ip_address(client_ip) in subnet for subnet in subnets)
 
         return bool(set(client_hostnames) & set(allowlist)) or client_ip in allowlist or client_ip_in_subnets
 
@@ -415,6 +416,7 @@ class AcmeConfig(VismConfig):
     nonce_ttl_seconds: int = 300
     retry_after_seconds: str = "5"
     default_profile: Profile = field(init=False)
+    trusted_proxies: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.validate_config()

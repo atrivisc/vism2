@@ -214,15 +214,8 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
                 encoded_payload=envelope_json.get("payload", None),
                 encoded_signature=envelope_json.get("signature", None),
             )
-        except ValidationError as exc:
-            if isinstance(exc.__cause__, ACMEProblemResponse):
-                raise exc.__cause__
-            else:
-                raise ACMEProblemResponse(
-                    error_type="malformed",
-                    title="Invalid JSON body",
-                    detail=str(exc)
-                ) from exc
+        except ACMEProblemResponse:
+            raise
         except Exception as exc:
             raise ACMEProblemResponse(
                 error_type="malformed",

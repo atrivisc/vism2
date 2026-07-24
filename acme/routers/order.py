@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
 from vism_lib.data.exchange import DataExchangeCSRMessage
-from vism_lib.util import absolute_url, get_client_ip
+from vism_lib.util import absolute_url, is_valid_subnet
 from acme.errors import ACMEProblemResponse
 from acme.config import acme_logger
 from acme.db.authz import (
@@ -78,7 +78,14 @@ class OrderRouter:
         order = await self._validate_order_request(order_id, request)
         order_authz_entities = self.controller.database.get_authz_by_order_id(order_id)
 
-        if order.status not in [OrderStatus.PROCESSING, OrderStatus.READY] or order.status in [OrderStatus.INVALID, OrderStatus.EXPIRED]:
+        if order.status in [OrderStatus.INVALID, OrderStatus.EXPIRED]:
+            raise ACMEProblemResponse(
+                error_type="orderNotReady",
+                title="Order is invalid or expired.",
+                status_code=403
+            )
+
+        if order.status not in [OrderStatus.PROCESSING, OrderStatus.READY]:
             raise ACMEProblemResponse(
                 error_type="orderNotReady",
                 title="Order is not ready for finalization.",
@@ -225,6 +232,28 @@ class OrderRouter:
             }
         )
 
+    async def get_client_ip(self, request: AcmeRequest) -> str:
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+
+        if len(x_forwarded_for.split(",")) != 1:
+            raise ACMEProblemResponse(
+                error_type="malformed",
+                title="Invalid X-Forwarded-For.",
+                detail="X-Forwarded-For should contain only 1 IP.",
+                status_code=400
+            )
+
+        if x_forwarded_for:
+            subnets = [subnet for subnet in self.controller.config.trusted_proxies if is_valid_subnet(subnet)]
+            host_in_subnets = any(request.client.host in subnet for subnet in subnets)
+            ips = [ip for ip in self.controller.config.trusted_proxies if ip not in subnets]
+            host_in_ips = request.client.host in ips
+
+            if host_in_subnets or host_in_ips:
+                return x_forwarded_for.split(",")[0].strip()
+
+        return request.client.host
+
     async def new_order(self, request: AcmeRequest):
         """Create a new order."""
         acme_logger.info("Received request to create new order.")
@@ -233,7 +262,7 @@ class OrderRouter:
         )
 
         errors = []
-        client_ip = get_client_ip(request)
+        client_ip = await self.get_client_ip(request)
         pre_validated = {}
         for identifier in request.state.jws_envelope.payload.identifiers:
             try:
