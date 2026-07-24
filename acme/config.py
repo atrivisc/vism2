@@ -318,7 +318,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
 
     def _client_in_allowlist(self, client_ip: str, allowlist: list[str]) -> bool:
         client_hostnames = self._resolve_client_hostnames(client_ip)
-        subnets = [ipaddress.ip_network(subnet) for subnet in allowlist if is_valid_subnet(subnet)]
+        subnets = [ipaddress.ip_network(subnet, strict=False) for subnet in allowlist if is_valid_subnet(subnet)]
         client_ip_in_subnets = any(ipaddress.ip_address(client_ip) in subnet for subnet in subnets)
 
         return bool(set(client_hostnames) & set(allowlist)) or client_ip in allowlist or client_ip_in_subnets

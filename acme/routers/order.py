@@ -1,5 +1,5 @@
 """Router for ACME order operations."""
-
+import ipaddress
 import secrets
 from datetime import timezone, datetime
 from typing import Any
@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter
 from starlette.responses import JSONResponse, Response
 from vism_lib.data.exchange import DataExchangeCSRMessage
-from vism_lib.util import absolute_url, is_valid_subnet
+from vism_lib.util import absolute_url, is_valid_subnet, is_valid_ip
 from acme.errors import ACMEProblemResponse
 from acme.config import acme_logger
 from acme.db.authz import (
@@ -232,8 +232,8 @@ class OrderRouter:
             }
         )
 
-    async def get_client_ip(self, request: AcmeRequest) -> str:
-        x_forwarded_for = request.headers.get("X-Forwarded-For")
+    def get_client_ip(self, request: AcmeRequest) -> str:
+        x_forwarded_for = request.headers.get("X-Forwarded-For", "")
 
         if len(x_forwarded_for.split(",")) != 1:
             raise ACMEProblemResponse(
@@ -244,13 +244,19 @@ class OrderRouter:
             )
 
         if x_forwarded_for:
-            subnets = [subnet for subnet in self.controller.config.trusted_proxies if is_valid_subnet(subnet)]
-            host_in_subnets = any(request.client.host in subnet for subnet in subnets)
-            ips = [ip for ip in self.controller.config.trusted_proxies if ip not in subnets]
-            host_in_ips = request.client.host in ips
+            subnets = [ipaddress.ip_network(subnet, strict=False) for subnet in self.controller.config.trusted_proxies if is_valid_subnet(subnet)]
+            host_in_subnets = any(ipaddress.ip_address(request.client.host) in subnet for subnet in subnets)
 
-            if host_in_subnets or host_in_ips:
-                return x_forwarded_for.split(",")[0].strip()
+            if host_in_subnets:
+                forwarded_ip = x_forwarded_for.split(",")[0].strip()
+                if not is_valid_ip(forwarded_ip):
+                    raise ACMEProblemResponse(
+                        error_type="malformed",
+                        title="Invalid X-Forwarded-For.",
+                        detail="X-Forwarded-For contains invalid IP.",
+                        status_code=400
+                    )
+
 
         return request.client.host
 
@@ -262,7 +268,7 @@ class OrderRouter:
         )
 
         errors = []
-        client_ip = await self.get_client_ip(request)
+        client_ip = self.get_client_ip(request)
         pre_validated = {}
         for identifier in request.state.jws_envelope.payload.identifiers:
             try:
