@@ -79,7 +79,7 @@ class AuthzRouter:
                 "status": challenge_entity.status,
                 "type": challenge_entity.type,
                 "token": str(challenge_entity.key_authorization).split(".")[0],
-                "url": absolute_url(request, f"/challenges/{challenge_entity.id}")
+                "url": absolute_url(request, f"/challenge/{challenge_entity.id}")
             },
             headers={
                 "Content-Type": "application/json",

@@ -1,6 +1,7 @@
 """Router for ACME order operations."""
 
 import secrets
+from datetime import timezone, datetime
 from typing import Any
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -75,70 +76,47 @@ class OrderRouter:
         """Finalize an order by submitting a CSR."""
         acme_logger.info("Received request to finalize order %s.", order_id)
         order = await self._validate_order_request(order_id, request)
+        order_authz_entities = self.controller.database.get_authz_by_order_id(order_id)
 
-        if order.status in ['invalid', 'expired']:
+        if order.status not in [OrderStatus.PROCESSING, OrderStatus.READY] or order.status in [OrderStatus.INVALID, OrderStatus.EXPIRED]:
             raise ACMEProblemResponse(
-                error_type="orderInvalid",
-                title="Order is invalid or has expired.",
+                error_type="orderNotReady",
+                title="Order is not ready for finalization.",
                 status_code=403
             )
+    
+        csr_der_b64 = request.state.jws_envelope.payload.csr
+        domains = [str(authz.identifier_value) for authz in order_authz_entities]
 
-        if order.status != 'processing':
-            if order.status != "ready":
-                order_authz_entities = (
-                    self.controller.database.get_authz_by_order_id(order_id)
-                )
-                order_ready = all(
-                    authz.status == AuthzStatus.VALID
-                    for authz in order_authz_entities
-                )
-                if order_ready:
-                    acme_logger.info("Order %s is ready.", order_id)
-                    order.status = "ready"
-                    order = self.controller.database.save_to_db(order)
-    
-            if order.status != "ready":
-                raise ACMEProblemResponse(
-                    error_type="orderNotReady",
-                    title="Order is not ready.",
-                    status_code=403
-                )
-    
-            csr_der_b64 = request.state.jws_envelope.payload.csr
-            order_authz_entities = (
-                self.controller.database.get_authz_by_order_id(order_id)
-            )
-            domains = [str(authz.identifier_value) for authz in order_authz_entities]
-    
-            profile = self.controller.config.get_profile_by_name(str(order.profile_name))
-            csr = profile.validate_csr(csr_der_b64, domains)
-            csr_pem = csr.public_bytes(serialization.Encoding.PEM)
-    
-            order.csr_pem = csr_pem.decode("utf-8")
-            order.status = OrderStatus.PROCESSING
-            order = self.controller.database.save_to_db(order)
-    
-            acme_logger.info("Validated order %s finalization. Sending CSR to RabbitMQ.", order_id)
-    
-            rabbitmq_message = DataExchangeCSRMessage(
-                csr_pem=csr_pem.decode("utf-8"),
-                ca_name=profile.ca,
-                days=profile.days,
-                module_args=profile.module_args,
-                order_id=order_id,
-                profile_name=profile.name,
-            )
-    
-            try:
-                await self.controller.data_exchange_module.send_message(rabbitmq_message)
-                acme_logger.info("Sent CSR to RabbitMQ.")
-            except Exception as exc:
-                acme_logger.error("Failed to send CSR to RabbitMQ: %s", exc)
-                raise ACMEProblemResponse(
-                    error_type="serverInternal",
-                    title="Internal error.",
-                    status_code=500
-                ) from exc
+        profile = self.controller.config.get_profile_by_name(str(order.profile_name))
+        csr = profile.validate_csr(csr_der_b64, domains)
+        csr_pem = csr.public_bytes(serialization.Encoding.PEM)
+
+        order.csr_pem = csr_pem.decode("utf-8")
+        order.status = OrderStatus.PROCESSING
+        order = self.controller.database.save_to_db(order)
+
+        acme_logger.info("Validated order %s finalization. Sending CSR to RabbitMQ.", order_id)
+
+        rabbitmq_message = DataExchangeCSRMessage(
+            csr_pem=csr_pem.decode("utf-8"),
+            ca_name=profile.ca,
+            days=profile.days,
+            module_args=profile.module_args,
+            order_id=order_id,
+            profile_name=profile.name,
+        )
+
+        try:
+            await self.controller.data_exchange_module.send_message(rabbitmq_message)
+            acme_logger.info("Sent CSR to RabbitMQ.")
+        except Exception as exc:
+            acme_logger.error("Failed to send CSR to RabbitMQ: %s", exc)
+            raise ACMEProblemResponse(
+                error_type="serverInternal",
+                title="Internal error.",
+                status_code=500
+            ) from exc
 
         return await self._order_json_response(
             order, order_authz_entities, request, 200
@@ -148,20 +126,8 @@ class OrderRouter:
         """Get the status of an order."""
         acme_logger.info("Received request to get order %s.", order_id)
         order = await self._validate_order_request(order_id, request)
-        order_authz_entities = (
-            self.controller.database.get_authz_by_order_id(order_id)
-        )
-        
-        if order.status == "pending":
-            order_ready = all(
-                authz.status == AuthzStatus.VALID
-                for authz in order_authz_entities
-            )
-            if order_ready:
-                acme_logger.info("Order %s is ready.", order_id)
-                order.status = "ready"
-                order = self.controller.database.save_to_db(order)
-        
+        order_authz_entities = self.controller.database.get_authz_by_order_id(order_id)
+
         return await self._order_json_response(
             order, order_authz_entities, request, 200
         )
@@ -178,6 +144,35 @@ class OrderRouter:
                 error_type="malformed",
                 title="Invalid order ID.",
                 status_code=404
+            )
+
+        # Check if the order has expired
+        order_expired = datetime.now(tz=timezone.utc) > order.expires
+        if order_expired:
+            order.status = OrderStatus.EXPIRED
+            order = self.controller.database.save_to_db(order)
+
+        # Check if the order should be promoted to ready
+        # This isn't exactly needed but a good failsafe if a validator fails to mark an order as ready
+        if order.status == OrderStatus.PENDING:
+            order_authz_entities = self.controller.database.get_authz_by_order_id(order_id)
+            order_ready = all(authz.status == AuthzStatus.VALID for authz in order_authz_entities)
+            if order_ready:
+                acme_logger.info("Order %s is ready.", order_id)
+                order.status = OrderStatus.READY
+                order = self.controller.database.save_to_db(order)
+
+        if order.status == OrderStatus.INVALID:
+            raise ACMEProblemResponse(
+                error_type="orderNotReady",
+                title="Order is invalid.",
+                status_code=403
+            )
+
+        if order.status == OrderStatus.EXPIRED:
+            raise ACMEProblemResponse(
+                error_type="orderNotReady",
+                title="Order has expired.",
             )
 
         if order.account.id != request.state.account.id:

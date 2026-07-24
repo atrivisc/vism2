@@ -5,7 +5,7 @@ import logging
 import re
 from abc import ABCMeta
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Optional, Callable, Self
 from jwcrypto.jwk import JWK
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass
@@ -85,6 +85,12 @@ class AcmeIdentifier:
                     detail="With type ip value must be a valid IP address"
                 )
 
+    def __eq__(self, other: str | Self):
+        if isinstance(other, str):
+            return self.value == other
+
+        return self.type == other.type and self.value == other.value
+
     def __hash__(self):
         return hash((self.type.value, self.value))
 
@@ -108,6 +114,14 @@ class AcmeProtectedPayload:  # pylint: disable=too-many-instance-attributes
     status: Optional[str] = None
     not_before: Optional[str] = None
     not_after: Optional[str] = None
+
+    def __post_init__(self):
+        if self.identifiers and len(set(self.identifiers)) != len(self.identifiers):
+            raise ACMEProblemResponse(
+                error_type="malformed",
+                title="Duplicate identifiers",
+                detail="identifiers must be unique"
+            )
 
     @field_validator("only_return_existing")
     @classmethod
@@ -196,11 +210,13 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
     def __init__(
             self,
             app,
+            jwk_or_kid_paths: Optional[list],
             jwk_paths: Optional[list],
             kid_paths: Optional[list],
             controller=None,
     ):
         super().__init__(app)
+        self.jwk_or_kid_paths = jwk_or_kid_paths
         self.jwk_paths = jwk_paths
         self.kid_paths = kid_paths
         self.controller = controller
@@ -271,19 +287,24 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
             status_code=403
         )
 
-
-
-    async def _get_account(self, request) -> AccountEntity:
-        """Get account from request JWS envelope."""
+    def _validate_request(self, request) -> None:
+        """Validate request."""
         jws_envelope = request.state.jws_envelope
 
-        if (any(request.url.path.startswith(path)
-                for path in self.jwk_paths) and
-                not jws_envelope.headers.jwk):
-            raise ACMEProblemResponse(
-                error_type="malformed",
-                title=f"{request.url.path} requests must contain a jwk key."
-            )
+        if self.jwk_or_kid_paths:
+            for path in self.jwk_or_kid_paths:
+                if re.match(path, request.url.path) and not jws_envelope.headers.jwk and not jws_envelope.headers.kid:
+                    raise ACMEProblemResponse(
+                        error_type="malformed",
+                        title=f"{request.url.path} requests must contain a jwk or kid key."
+                    )
+
+        for path in self.jwk_paths:
+            if re.match(path, request.url.path) and not jws_envelope.headers.jwk:
+                raise ACMEProblemResponse(
+                    error_type="malformed",
+                    title=f"{request.url.path} requests must contain a jwk key."
+                )
 
         for path in self.kid_paths:
             if re.match(path, request.url.path) and not jws_envelope.headers.kid:
@@ -291,6 +312,12 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
                     error_type="malformed",
                     title=f"{request.url.path} requests must contain a kid."
                 )
+
+
+    async def _get_account(self, request) -> AccountEntity:
+        """Get account from request JWS envelope."""
+        jws_envelope = request.state.jws_envelope
+        self._validate_request(request)
 
         if jws_envelope.headers.kid:
             account = self.controller.database.get_account_by_kid(

@@ -77,12 +77,8 @@ class AccountRouter:
 
     async def new_account(self, request: AcmeRequest):
         """Create a new ACME account or return existing one."""
-        account_exists = (
-            hasattr(request.state, "account") and
-            request.state.account is not None and
-            not request.state.jws_envelope.payload.only_return_existing
-        )
-        if not account_exists:
+
+        if request.state.account is None and request.state.jws_envelope.payload.only_return_existing:
             raise ACMEProblemResponse(
                 error_type="accountDoesNotExist",
                 title="Provided JWK is not linked to an account."
