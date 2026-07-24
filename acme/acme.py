@@ -144,7 +144,11 @@ class VismACMEController(Controller):
         self.api.add_middleware(
             AcmeAccountMiddleware,
             jwk_paths=["/new-account", "/revoke-cert"],
-            kid_paths=["/account/", "/new-order", "/authz"],
+            kid_paths=[
+                "/account(.*?)", "/new-order(.*?)", "/authz(.*?)", "/order(.*?)",
+                "/revoke-cert(.*?)", "/orders(.*?)", "/challenge(.*?)", "/key-change(.*?)",
+                "/order/(.*?)/finalize", "/order/(.*?)/certificate"
+            ],
             controller=self,
         )
 

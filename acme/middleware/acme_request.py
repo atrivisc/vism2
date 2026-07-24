@@ -2,6 +2,7 @@
 """Middleware for ACME request validation and account handling."""
 
 import logging
+import re
 from abc import ABCMeta
 from datetime import datetime
 from typing import Optional, Callable
@@ -84,6 +85,9 @@ class AcmeIdentifier:
                     detail="With type ip value must be a valid IP address"
                 )
 
+    def __hash__(self):
+        return hash((self.type.value, self.value))
+
     def to_dict(self):
         """Convert identifier to dictionary."""
         return {
@@ -121,7 +125,7 @@ class AcmeProtectedPayload:  # pylint: disable=too-many-instance-attributes
     @classmethod
     def status_must_be_valid(cls, v):
         """Validate status field."""
-        if v and v not in ["valid", "invalid", "deactivated"]:
+        if v and v not in ["deactivated"]:
             raise ACMEProblemResponse(
                 error_type="malformed",
                 title="Invalid status value",
@@ -281,13 +285,12 @@ class AcmeAccountMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-publi
                 title=f"{request.url.path} requests must contain a jwk key."
             )
 
-        if (any(request.url.path.startswith(path)
-                for path in self.kid_paths) and
-                not jws_envelope.headers.kid):
-            raise ACMEProblemResponse(
-                error_type="malformed",
-                title=f"{request.url.path} requests must contain a kid."
-            )
+        for path in self.kid_paths:
+            if re.match(path, request.url.path) and not jws_envelope.headers.kid:
+                raise ACMEProblemResponse(
+                    error_type="malformed",
+                    title=f"{request.url.path} requests must contain a kid."
+                )
 
         if jws_envelope.headers.kid:
             account = self.controller.database.get_account_by_kid(

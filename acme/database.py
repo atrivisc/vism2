@@ -21,15 +21,6 @@ from acme.config import acme_logger
 class VismAcmeDatabase(VismDatabase):
     """Database interface for VISM ACME operations."""
 
-    def get_jwk_by_kid(self, kid: str) -> Optional[JWKEntity]:
-        """Retrieve JWK entity by its key ID (kid)."""
-        with self._get_session() as session:
-            account = self.get_account_by_kid(kid)
-            if not account:
-                return None
-
-            return session.query(JWKEntity).filter(JWKEntity.id == account.jwk_id).one_or_none()
-
     def delete(self, obj_type: Type[Base], *criterion: ColumnExpressionArgument[bool]):
         with self._get_session() as session:
             session.query(obj_type).filter(*criterion).delete()

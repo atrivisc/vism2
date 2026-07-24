@@ -24,6 +24,17 @@ class AccountRouter:
 
     async def update_account(self, request: AcmeRequest, account_kid: str):
         """Update an existing ACME account."""
+        if account_kid != request.state.account.kid:
+            raise ACMEProblemResponse(
+                error_type="unauthorized",
+                title="Account mismatch.",
+                detail=(
+                    "The JWS was signed by a different account than "
+                    "the one addressed by the request URL."
+                ),
+                status_code=403
+            )
+
         if not request.state.jws_envelope.payload:
             raise ACMEProblemResponse(
                 error_type="malformed",
@@ -54,7 +65,7 @@ class AccountRouter:
                 "contact": (
                     account.contact.split(",") if account.contact else []
                 ),
-                "orders": absolute_url(request, f"/orders/{account_kid}"),
+                "orders": absolute_url(request, f"/orders/{account.kid}"),
             },
             status_code=200,
             headers={
@@ -66,8 +77,12 @@ class AccountRouter:
 
     async def new_account(self, request: AcmeRequest):
         """Create a new ACME account or return existing one."""
-        if (not hasattr(request.state, "account") and
-                request.state.jws_envelope.payload.only_return_existing):
+        account_exists = (
+            hasattr(request.state, "account") and
+            request.state.account is not None and
+            not request.state.jws_envelope.payload.only_return_existing
+        )
+        if not account_exists:
             raise ACMEProblemResponse(
                 error_type="accountDoesNotExist",
                 title="Provided JWK is not linked to an account."

@@ -299,7 +299,7 @@ class Profile:  # pylint: disable=too-many-instance-attributes
         return False
 
     @staticmethod
-    def _resolve_client_hostnames(client_ip: str) -> list[str] | ACMEProblemResponse:
+    def _resolve_client_hostnames(client_ip: str) -> list[str]:
         client_hostnames = []
         try:
             host_by_addr = socket.gethostbyaddr(client_ip)
@@ -308,36 +308,33 @@ class Profile:  # pylint: disable=too-many-instance-attributes
         except socket.herror:
             pass  # No PTR, so we skip
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            return ACMEProblemResponse(
+            raise ACMEProblemResponse(
                 error_type="serverInternal",
                 title="Unknown error occurred while validating domain",
                 detail=str(exc)
             )
         return client_hostnames
 
-    def _client_in_allowlist(self, client_ip: str, allowlist: list[str]) -> bool | ACMEProblemResponse:
+    def _client_in_allowlist(self, client_ip: str, allowlist: list[str]) -> bool:
         client_hostnames = self._resolve_client_hostnames(client_ip)
-        if isinstance(client_hostnames, ACMEProblemResponse):
-            return client_hostnames
-
         subnets = [subnet for subnet in allowlist if is_valid_subnet(subnet)]
         client_ip_in_subnets = any(client_ip in subnet for subnet in subnets)
 
         return bool(set(client_hostnames) & set(allowlist)) or client_ip in allowlist or client_ip_in_subnets
 
-    def _client_in_cluster(self, client_ip: str) -> bool | ACMEProblemResponse:
+    def _client_in_cluster(self, client_ip: str) -> bool:
         if not self.cluster:
             return False
 
         return self._client_in_allowlist(client_ip, self.cluster)
 
-    def _client_in_dv(self, client_ip: str, domain: DomainValidation) -> bool | ACMEProblemResponse:
+    def _client_in_dv(self, client_ip: str, domain: DomainValidation) -> bool:
         if domain.clients == ["*"]:
             return True
 
         return self._client_in_allowlist(client_ip, domain.clients)
 
-    def _client_is_allowed(self, client_ip: str, domain: str) -> bool | ACMEProblemResponse:
+    def _client_is_allowed(self, client_ip: str, domain: str) -> bool:
         if not self.acl:
             return False
 

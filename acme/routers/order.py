@@ -76,6 +76,13 @@ class OrderRouter:
         acme_logger.info("Received request to finalize order %s.", order_id)
         order = await self._validate_order_request(order_id, request)
 
+        if order.status in ['invalid', 'expired']:
+            raise ACMEProblemResponse(
+                error_type="orderInvalid",
+                title="Order is invalid or has expired.",
+                status_code=403
+            )
+
         if order.status != 'processing':
             if order.status != "ready":
                 order_authz_entities = (
@@ -216,10 +223,10 @@ class OrderRouter:
 
         errors = []
         client_ip = get_client_ip(request)
-        pre_validated = False
+        pre_validated = {}
         for identifier in request.state.jws_envelope.payload.identifiers:
             try:
-                pre_validated = await profile.validate_client(client_ip, identifier.value)
+                pre_validated[identifier.value] = await profile.validate_client(client_ip, identifier.value)
             except ACMEProblemResponse as exc:
                 errors.append(exc)
 
@@ -244,7 +251,7 @@ class OrderRouter:
 
         authz_entities = []
         for identifier in request.state.jws_envelope.payload.identifiers:
-            authz_status = AuthzStatus.PENDING if not pre_validated else AuthzStatus.VALID
+            authz_status = AuthzStatus.PENDING if not pre_validated[identifier] else AuthzStatus.VALID
             authz_entity = AuthzEntity(
                 identifier_type=identifier.type,
                 identifier_value=identifier.value,
@@ -260,7 +267,7 @@ class OrderRouter:
                 key_authorization = (
                     token + "." + request.state.account.jwk.thumbprint()
                 )
-                challenge_status = ChallengeStatus.PENDING if not pre_validated else ChallengeStatus.VALID
+                challenge_status = ChallengeStatus.PENDING if not pre_validated[identifier] else ChallengeStatus.VALID
                 challenge = ChallengeEntity(
                     type=challenge_type,
                     status=challenge_status,

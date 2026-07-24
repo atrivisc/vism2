@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks
 from starlette.responses import JSONResponse
+from vism_lib.util import absolute_url
 
 from acme.db import AuthzStatus, ChallengeStatus
 from acme.db import OrderStatus
@@ -21,7 +22,6 @@ class AuthzRouter:
         self.router = APIRouter()
         self.router.post("/authz/{authz_id}")(self.authz)
         self.router.post("/challenge/{challenge_id}")(self.challenge)
-        self.router.get("/challenge/{challenge_id}")(self.challenge)
 
     async def challenge(
             self,
@@ -79,6 +79,7 @@ class AuthzRouter:
                 "status": challenge_entity.status,
                 "type": challenge_entity.type,
                 "token": str(challenge_entity.key_authorization).split(".")[0],
+                "url": absolute_url(request, f"/challenges/{challenge_entity.id}")
             },
             headers={
                 "Content-Type": "application/json",

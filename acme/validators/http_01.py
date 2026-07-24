@@ -39,14 +39,14 @@ class Http01Validator:
 
         return aiohttp.ClientSession(
             timeout=timeout,
-            raise_for_status=False
+            raise_for_status=False,
         )
 
     async def _fetch_with_retries(self, session, url):
         last_exc = None
         for attempt in range(1, self.retries + 1):
             try:
-                async with session.get(url) as response:
+                async with session.get(url, allow_redirects=self.follow_redirect) as response:
                     text = await response.text()
                     return response.status, text
             except (

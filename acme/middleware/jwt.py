@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 ALLOWED_SIGNATURE_ALGS = [
     "RS256", "RS384", "RS512",
     "ES256", "ES384", "ES512",
+    "PS256", "PS384", "PS512",
 ]
-
 
 @dataclass
 class AcmeJWSEnvelope:
@@ -148,6 +148,7 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
             return await call_next(request)
 
         try:
+            self._validate_content_type(request)
             jws_envelope = await self._parse_jws_envelope(request)
             self._validate_url_header(request, jws_envelope)
         except ACMEProblemResponse as exc:
@@ -156,6 +157,23 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
         request.state.jws_envelope = jws_envelope
 
         return await call_next(request)
+
+    @staticmethod
+    def _validate_content_type(request: Request) -> None:
+        content_type = request.headers.get("Content-Type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+
+        if media_type != "application/jose+json":
+            raise ACMEProblemResponse(
+                error_type="malformed",
+                title="Invalid Content-Type.",
+                detail=(
+                    "ACME requests must use Content-Type "
+                    "\"application/jose+json\", got "
+                    f"\"{content_type or '(none)'}\"."
+                ),
+                status_code=415
+            )
 
     @staticmethod
     def _validate_url_header(
@@ -188,8 +206,8 @@ class JWSMiddleware(BaseHTTPMiddleware): # pylint: disable=too-few-public-method
     @staticmethod
     async def _parse_jws_envelope(request: Request) -> AcmeJWSEnvelope:
         """Parse JWS envelope from request body."""
-        envelope_json = await request.json()
         try:
+            envelope_json = await request.json()
             jws_envelope = AcmeJWSEnvelope(
                 encoded_protected=envelope_json.get("protected", None),
                 encoded_payload=envelope_json.get("payload", None),
