@@ -50,6 +50,11 @@ class BaseRouter:
             "newAccount": absolute_url(request, "/new-account"),
             "newOrder": absolute_url(request, "/new-order"),
             "revokeCert": absolute_url(request, "/revoke-cert"),
-            "keyChange": None
+            "keyChange": None,
+            "meta": {
+                "termsOfService": "TODO",
+                "caaIdentities": ["rik.sise"],
+                "profiles": {profile.name: f"Days: {profile.days} | CA: {profile.ca} | Is Default: {profile.default}" for profile in self.controller.config.profiles}
+            }
         }
         return JSONResponse(dir_obj)
