@@ -1,13 +1,19 @@
 """Main Vism CA class and entrypoint."""
 
 import asyncio
+import base64
 from datetime import timezone, datetime
 
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509 import CertificateSigningRequest, Extension
 from pyasn1_modules import rfc5280
 from sqlalchemy import URL, create_engine
 from vism_lib.data.validation import DataValidation
 from vism_lib.rabbitmq import RabbitMQClient, RabbitMQExchange
 from vism_lib.s3 import AsyncS3Client
+from vism_lib.util import snake_to_camel
 
 from ca.abc import Election, KeyManager
 from ca.certificate import CertificateManager
@@ -20,8 +26,23 @@ from vism_lib.errors import VismBreakingException, VismException
 from pyasn1.codec.der.encoder import encode as der_encoder
 from pyasn1.codec.der.decoder import decode as der_decoder
 
+from ca.errors import AcmeCSRException
 from ca.rabbitmq_election import RabbitMQElection
 
+DISALLOWED_KEY_USAGES = [
+    "cRLSign",
+    "keyCertSign",
+]
+
+# should this be hardcoded?
+# also left out ocsp signing cause we don't support it
+ALLOWED_EXTENDED_KEY_USAGE_OIDS = [
+    "1.3.6.1.5.5.7.3.1",  # serverAuth
+    "1.3.6.1.5.5.7.3.2",  # clientAuth
+    "1.3.6.1.5.5.7.3.3",  # codeSigning
+    "1.3.6.1.5.5.7.3.4",  # emailProtection
+    "1.3.6.1.5.5.7.3.8",  # timeStamping
+]
 
 class VismCA(Controller):
     def __init__(
@@ -109,6 +130,7 @@ class VismCA(Controller):
 
         try:
             csr_der_bytes = csr_pem_to_der(message.csr_pem)
+            self.validate_csr(csr_der_bytes)
         except Exception as e:
             return ca_logger.error(f"Invalid cert order '{message.order_id}': Failed to parse CSR: {e}")
 
@@ -125,6 +147,75 @@ class VismCA(Controller):
         )
 
         return await self.data_exchange_module.send_message(cert_message)
+
+    def validate_csr(self, csr_der: bytes) -> CertificateSigningRequest:
+        # pylint: disable=too-many-branches
+        """Validate a Certificate Signing Request. Raises AcmeCSRException on invalid csr."""
+        try:
+            csr = x509.load_der_x509_csr(
+                data=csr_der,
+                backend=default_backend()
+            )
+        except Exception as exc:
+            raise AcmeCSRException("Failed to parse CSR der.") from exc
+
+        if isinstance(csr.public_key(), rsa.RSAPublicKey) and csr.public_key().key_size < 2048:
+            raise AcmeCSRException("RSA key too small.")
+
+        if not csr.is_signature_valid:
+            raise AcmeCSRException("CSR signature is invalid.")
+
+        self._validate_csr_extensions(csr)
+
+        return csr
+
+    def _validate_csr_extensions(self, csr: CertificateSigningRequest):
+        csr_extensions: list[x509.Extension] = list(iter(csr.extensions))
+        for ext in csr_extensions:
+            if ext.oid == x509.oid.ExtensionOID.BASIC_CONSTRAINTS:
+                self._validate_csr_basic_constraint(ext)
+            elif ext.oid == x509.oid.ExtensionOID.KEY_USAGE:
+                self._validate_csr_key_usage(ext)
+            elif ext.oid == x509.oid.ExtensionOID.EXTENDED_KEY_USAGE:
+                self._validate_extended_key_usage(ext)
+            elif ext.oid == x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME:
+                self._validate_csr_san(ext)
+            else:
+                raise AcmeCSRException(f"Invalid extension: {ext.oid.dotted_string}")
+
+    @staticmethod
+    def _validate_csr_san(ext: Extension):
+        for name in ext.value:
+            if type(name) not in [x509.DNSName, x509.IPAddress]:
+                raise AcmeCSRException(f"Invalid SAN: {name}")
+
+    @staticmethod
+    def _validate_extended_key_usage(ext: Extension):
+        for ext_key_usage in ext.value:
+            if ext_key_usage.dotted_string not in ALLOWED_EXTENDED_KEY_USAGE_OIDS:
+                # pylint: disable=protected-access
+                raise AcmeCSRException(f"Invalid extended key usage: {ext_key_usage.dotted_string}")
+
+    @staticmethod
+    def _validate_csr_key_usage(ext: Extension):
+        for key, value in vars(ext.value).items():
+            if not value:
+                continue
+
+            key_usage = snake_to_camel(key.lstrip('_'))
+            if key_usage in DISALLOWED_KEY_USAGES:
+                raise AcmeCSRException(f"Invalid key usage: {key_usage}")
+
+    @staticmethod
+    def _validate_csr_basic_constraint(ext: Extension):
+        if ext.value.ca:
+            raise AcmeCSRException("CA CSRs are not allowed.")
+
+        if ext.value.path_length and ext.value.path_length != 0:
+            raise AcmeCSRException("CSR must have a path length of 0 or not have the pathLen constraint.")
+
+        if not ext.critical:
+            raise AcmeCSRException("Basic Constraints extension must be critical.")
 
     async def run(self):
         """Entrypoint for the CA. Initializes and manages the CA lifecycle."""

@@ -20,3 +20,6 @@ class CertConfigNotFound(VismException):
 
 class CryptoException(VismException):
     """Raised when a crypto operation fails."""
+
+class AcmeCSRException(VismException):
+    """Raised when a crypto operation fails."""
