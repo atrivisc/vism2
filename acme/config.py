@@ -208,6 +208,10 @@ class Profile:  # pylint: disable=too-many-instance-attributes
             domain: str
     ) -> bool:
         """Validate that a client has authority over a domain."""
+        client_pre_validated = self._client_is_valid(client_ip, domain)
+        if client_pre_validated:
+            return True
+
         try:
             domain_ips = {
                 x[4][0] for x in socket.getaddrinfo(domain, None)
@@ -231,7 +235,6 @@ class Profile:  # pylint: disable=too-many-instance-attributes
                 title="Domain exists but has no IPs",
             )
 
-        client_pre_validated = self._client_is_valid(client_ip, domain)
         client_allowed = self._client_is_allowed(client_ip, domain)
         client_in_cluster = self._client_in_cluster(client_ip)
 

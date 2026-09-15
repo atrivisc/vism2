@@ -94,10 +94,7 @@ class Http01Validator:
 
                 if status != 200 or body != self.challenge.key_authorization:
                     error = "incorrectResponse"
-                    error_detail = (
-                        f"Invalid response from {validation_url}: "
-                        f"{status} {body}"
-                    )
+                    error_detail = f"Invalid response from {validation_url}"
 
                 else:
                     self.challenge.status = ChallengeStatus.VALID
